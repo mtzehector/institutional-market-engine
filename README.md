@@ -4,7 +4,7 @@ Motor cuantitativo experimental para analizar campañas de Smart Money, costo de
 
 ## Estado
 
-Versión 0.3.0 en desarrollo. Las métricas de Smart Money, IPAI, campaña institucional y probabilidad de gap son modelos experimentales; no identifican directamente participantes institucionales ni constituyen recomendaciones de inversión.
+Versión **0.4.0** en desarrollo. Las métricas de Smart Money, IPAI, campaña institucional, predictibilidad y probabilidad de gap son modelos experimentales; no identifican directamente participantes institucionales ni constituyen recomendaciones de inversión.
 
 ## Capacidades actuales
 
@@ -17,9 +17,9 @@ Versión 0.3.0 en desarrollo. Las métricas de Smart Money, IPAI, campaña insti
 - Predictor independiente de gap up y gap down significativo.
 - Umbral adaptativo: `max(1%, 0.5 × ATR porcentual)`.
 - Regresión logística cronológica combinada con sesiones históricas comparables.
-- Brier Score, ROC-AUC, probabilidad base y lift.
-- Walk-forward con ventana expansiva y reentrenamiento para cada predicción.
-- Tabla de calibración por intervalos de probabilidad.
+- Walk-forward con ventana expansiva.
+- Model Evaluation Engine con ranking de predictibilidad por ticker.
+- Brier Score, Brier Skill, ROC-AUC, calibración, precisión, recall y lift.
 - Exportación a Excel para auditoría.
 
 ## Instalación
@@ -47,48 +47,13 @@ GAP_ATR_MULTIPLIER=0.50
 ATR_LENGTH=14
 ```
 
-## Predicción de la siguiente sesión
-
-Con TEAM:
+## Predicción para la siguiente sesión
 
 ```bat
 market-engine predict-gap --ticker TEAM --years 5 --export
 ```
 
-También puede ejecutarse como módulo:
-
-```bat
-python -m market_engine.cli predict-gap --ticker TEAM --years 5 --export
-```
-
-El resultado se muestra en consola y, con `--export`, se genera:
-
-```text
-prediccion_gap_manana_FMP.xlsx
-```
-
-Hojas:
-
-- `Prediccion`: probabilidad de gap up, gap down y ausencia de gap relevante.
-- `Auditoria`: variables y etiquetas históricas para revisar el modelo.
-
-## Walk-forward
-
-Para reproducir qué habría predicho el modelo antes de las aperturas del 13 y 14 de julio de 2026:
-
-```bat
-market-engine walk-forward ^
-  --ticker TEAM ^
-  --from-date 2026-07-13 ^
-  --to-date 2026-07-14 ^
-  --training-years 5 ^
-  --export ^
-  --output TEAM_walk_forward_2026-07-13_2026-07-14.xlsx
-```
-
-La fecha evaluada es la fecha de apertura objetivo. Para predecir el 13 de julio, el motor solo usa información disponible hasta la sesión anterior. Para predecir el 14 de julio, incorpora el cierre del 13, pero nunca la apertura del 14.
-
-Para evaluar un periodo más amplio:
+## Walk-forward de un ticker
 
 ```bat
 market-engine walk-forward ^
@@ -97,28 +62,72 @@ market-engine walk-forward ^
   --to-date 2026-07-14 ^
   --training-years 5 ^
   --step 1 ^
-  --decision-threshold 0.50 ^
   --export
 ```
 
-El Excel contiene:
+## Evaluar predictibilidad de un ticker
 
-- `Predicciones`: probabilidad emitida, gap real y acierto por sesión.
-- `Metricas`: Brier Score, ROC-AUC, precision y recall.
-- `Calibracion`: probabilidad media frente a frecuencia real observada.
+```bat
+market-engine evaluate-models ^
+  --ticker TEAM ^
+  --from-date 2025-01-02 ^
+  --to-date 2026-07-14 ^
+  --training-years 5 ^
+  --step 1 ^
+  --export ^
+  --output TEAM_predictibilidad.xlsx
+```
 
-`--step 1` predice todas las sesiones. Para una prueba más rápida puede utilizarse `--step 5`, aunque eso evalúa solamente una de cada cinco sesiones.
+## Ranking de una lista de tickers
 
-## Interpretación
+El TXT debe contener un ticker por línea.
 
-- `probability_up`: probabilidad estimada de gap up significativo.
-- `probability_down`: probabilidad estimada de gap down significativo.
-- `probability_no_gap`: probabilidad residual.
-- `base_up` y `base_down`: personalidad histórica base del ticker.
-- `lift_up` y `lift_down`: probabilidad actual dividida por la base histórica.
-- `brier_up` y `brier_down`: menor es mejor.
-- `roc_auc_up` y `roc_auc_down`: 0.5 equivale aproximadamente a azar.
-- `correct_direction`: compara `GAP_UP`, `GAP_DOWN` o `SIN_GAP` usando el umbral de decisión.
+```bat
+market-engine evaluate-models ^
+  --tickers config\tickers_nasdaq.txt ^
+  --from-date 2025-01-02 ^
+  --to-date 2026-07-14 ^
+  --training-years 5 ^
+  --step 5 ^
+  --export ^
+  --output ranking_predictibilidad_FMP.xlsx
+```
+
+Para una evaluación definitiva use `--step 1`. Durante pruebas iniciales puede usar `--step 5` o `--step 10` para reducir el tiempo de procesamiento.
+
+## Índice de Predictibilidad
+
+El score de 0 a 100 combina:
+
+- 35% exactitud direccional de tres clases: Gap Up, Gap Down y Sin Gap.
+- 20% exactitud ponderada por la confianza emitida.
+- 20% mejora del Brier Score respecto a la probabilidad histórica base.
+- 15% calibración de las probabilidades.
+- 10% confiabilidad por tamaño de muestra.
+
+Las predicciones de alta confianza también aportan un ajuste adicional cuando existe una muestra suficiente.
+
+### Grados
+
+| Score | Grado |
+|---:|---|
+| 80–100 | A_EXCELENTE |
+| 65–79.99 | B_CONFIABLE |
+| 50–64.99 | C_EN_OBSERVACION |
+| 35–49.99 | D_DEBIL |
+| 0–34.99 | E_NO_CONFIABLE |
+
+Con menos de 40 observaciones el grado es `MUESTRA_INSUFICIENTE`, aunque se siga mostrando el score provisional.
+
+## Excel de evaluación
+
+El comando `evaluate-models --export` genera:
+
+- `Ranking`: puntaje y expediente completo por ticker.
+- `Bandas_Confianza`: exactitud observada por nivel de probabilidad emitida.
+- `Desempeno_Reciente`: ventanas de 20, 60, 120 y 250 sesiones.
+- `Predicciones`: detalle cuando se usa un ticker o `--include-predictions`.
+- `Errores`: tickers que no pudieron evaluarse.
 
 ## Pruebas
 
@@ -126,18 +135,19 @@ El Excel contiene:
 pytest
 ```
 
-Las pruebas validan el umbral adaptativo, la ausencia de etiquetas futuras, la conversión numérica de sesiones comparables y la cronología del walk-forward.
+Las pruebas validan el umbral adaptativo, la ausencia de fuga de datos, el cálculo de sesiones comparables y el ranking de predictibilidad.
 
 ## Estructura
 
 ```text
 src/market_engine/
-├── backtesting/walk_forward.py
 ├── providers/fmp.py
 ├── indicators/smart_money.py
 ├── indicators/volatility.py
 ├── gaps/features.py
 ├── gaps/predictor.py
+├── backtesting/walk_forward.py
+├── evaluation/model_evaluation.py
 └── cli.py
 ```
 

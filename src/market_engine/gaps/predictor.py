@@ -70,12 +70,38 @@ def _comparable_probability(
         "qqq_return_1d_pct",
         "volatility_10d_pct",
     ]
+
     candidates = modeling.dropna(subset=[target]).copy()
-    median = candidates[columns].median()
-    scale = candidates[columns].std().replace(0, 1)
-    current = latest[columns].fillna(median)
-    normalized = (candidates[columns].fillna(median) - current) / scale
-    candidates["distance"] = np.sqrt(np.square(normalized).sum(axis=1))
+    if candidates.empty:
+        return 0.5
+
+    # Fuerza todas las variables comparables a float64. Algunas columnas pueden
+    # llegar como object después de merges o lecturas desde caché CSV.
+    numeric_candidates = candidates[columns].apply(
+        pd.to_numeric,
+        errors="coerce",
+    ).astype("float64")
+
+    median = numeric_candidates.median()
+    scale = numeric_candidates.std().replace(0, 1).fillna(1.0)
+
+    current = pd.to_numeric(
+        latest[columns],
+        errors="coerce",
+    ).astype("float64").fillna(median)
+
+    normalized = (
+        numeric_candidates.fillna(median).sub(current, axis="columns")
+        / scale
+    )
+
+    # Convertir explícitamente a ndarray evita que los ufunc de NumPy operen
+    # sobre Series/DataFrames con dtype object.
+    normalized_values = normalized.to_numpy(dtype=np.float64, copy=False)
+    distances = np.sqrt(np.square(normalized_values).sum(axis=1))
+
+    candidates = candidates.reset_index(drop=True)
+    candidates["distance"] = distances
     sample = candidates.nsmallest(min(neighbors, len(candidates)), "distance")
     positives = int(sample[target].sum())
     return (positives + 1) / (len(sample) + 2)

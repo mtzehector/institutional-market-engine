@@ -224,16 +224,35 @@ def evaluate_predictions(
     down_precision = float((frame.loc[predicted_down, "actual_direction"] == "GAP_DOWN").mean()) if predicted_down.any() else np.nan
 
     sample_reliability = min(1.0, observations / 250.0)
-    score = 100.0 * (
-        0.35 * _score_component(directional_accuracy, 0.33, 0.70)
-        + 0.20 * _score_component(confidence_weighted_accuracy, 0.33, 0.75)
-        + 0.20 * _score_component(mean_brier_skill, 0.0, 0.35)
-        + 0.15 * _score_component(1.0 - mean_ece, 0.80, 0.98)
+
+    # Accuracy must remain discriminative through 100%.  The previous upper bounds
+    # (70% and 75%) saturated too early, allowing secondary metrics to rank a less
+    # accurate ticker above a more accurate one.
+    directional_component = _score_component(directional_accuracy, 1.0 / 3.0, 1.0)
+    confidence_accuracy_component = _score_component(
+        confidence_weighted_accuracy, 1.0 / 3.0, 1.0
+    )
+    brier_component = _score_component(mean_brier_skill, 0.0, 0.35)
+    calibration_component = _score_component(1.0 - mean_ece, 0.80, 0.98)
+
+    raw_score = 100.0 * (
+        0.45 * directional_component
+        + 0.20 * confidence_accuracy_component
+        + 0.15 * brier_component
+        + 0.10 * calibration_component
         + 0.10 * sample_reliability
     )
 
+    # Directional gate: probabilistic calibration cannot fully compensate for
+    # repeatedly choosing the wrong class.  The factor ranges from 0.70 to 1.00.
+    directional_gate = 0.70 + 0.30 * directional_component
+    score = raw_score * directional_gate
+
     if high_conf_observations >= 10 and pd.notna(high_conf_accuracy):
-        score = 0.90 * score + 10.0 * _score_component(high_conf_accuracy, 0.40, 0.80)
+        high_conf_component = _score_component(high_conf_accuracy, 0.40, 1.0)
+        score = 0.95 * score + 5.0 * high_conf_component
+    else:
+        high_conf_component = np.nan
 
     score = float(np.clip(score, 0.0, 100.0))
     summary = pd.DataFrame(
@@ -267,6 +286,13 @@ def evaluate_predictions(
                 "calibration_error_down": ece_down,
                 "mean_calibration_error": mean_ece,
                 "sample_reliability": sample_reliability,
+                "directional_component": directional_component,
+                "confidence_accuracy_component": confidence_accuracy_component,
+                "brier_component": brier_component,
+                "calibration_component": calibration_component,
+                "directional_gate": directional_gate,
+                "high_confidence_component": high_conf_component,
+                "raw_predictability_score": raw_score,
                 "average_absolute_gap_pct": float(frame["actual_gap_pct"].abs().mean()),
             }
         ]

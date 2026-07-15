@@ -20,6 +20,9 @@ class Settings:
     smart_money_volume_length: int = 20
     smart_money_ema: int = 5
     minimum_delta_smart_money: float = 0.25
+    gap_min_pct: float = 1.0
+    gap_atr_multiplier: float = 0.50
+    atr_length: int = 14
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -40,4 +43,7 @@ class Settings:
             smart_money_volume_length=int(os.getenv("SMART_MONEY_VOLUME_LENGTH", "20")),
             smart_money_ema=int(os.getenv("SMART_MONEY_EMA", "5")),
             minimum_delta_smart_money=float(os.getenv("MIN_DELTA_SM", "0.25")),
+            gap_min_pct=float(os.getenv("GAP_MIN_PCT", "1.0")),
+            gap_atr_multiplier=float(os.getenv("GAP_ATR_MULTIPLIER", "0.50")),
+            atr_length=int(os.getenv("ATR_LENGTH", "14")),
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -139,9 +140,53 @@ def build_score_changes(history: pd.DataFrame) -> pd.DataFrame:
     return ordered
 
 
+def _excel_safe_value(value: Any) -> Any:
+    """Convert timezone-aware scalar datetimes into Excel-compatible values."""
+    if value is None or value is pd.NaT:
+        return value
+
+    if isinstance(value, pd.Timestamp):
+        if value.tzinfo is not None:
+            return value.tz_convert("UTC").tz_localize(None)
+        return value
+
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+    return value
+
+
+def excel_safe_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy without timezone-aware datetimes in any column.
+
+    Pandas may store timezone-aware values either as ``datetime64[ns, tz]`` or
+    inside ``object`` columns. Excel/openpyxl accepts neither, so both cases are
+    normalized here before exporting.
+    """
+    safe = frame.copy()
+
+    for column in safe.columns:
+        series = safe[column]
+
+        if isinstance(series.dtype, pd.DatetimeTZDtype):
+            safe[column] = series.dt.tz_convert("UTC").dt.tz_localize(None)
+            continue
+
+        if series.dtype == "object":
+            safe[column] = series.map(_excel_safe_value)
+
+    return safe
+
+
 def export_registry_workbook(result: RegistryResult, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        result.leaderboard.to_excel(writer, sheet_name="Hall_of_Fame", index=False)
-        result.changes.to_excel(writer, sheet_name="Historial_Scores", index=False)
-        result.history.to_excel(writer, sheet_name="Registro_Completo", index=False)
+        excel_safe_dataframe(result.leaderboard).to_excel(
+            writer, sheet_name="Hall_of_Fame", index=False
+        )
+        excel_safe_dataframe(result.changes).to_excel(
+            writer, sheet_name="Historial_Scores", index=False
+        )
+        excel_safe_dataframe(result.history).to_excel(
+            writer, sheet_name="Registro_Completo", index=False
+        )

@@ -148,17 +148,22 @@ def walk_forward_gap(
     min_history_rows: int = 180,
     step: int = 1,
     decision_threshold: float = 0.50,
+    max_history_rows: int | None = None,
 ) -> WalkForwardResult:
-    """Run expanding-window walk-forward predictions without future leakage.
+    """Run walk-forward predictions without future leakage.
 
-    Each prediction uses rows available through session t and evaluates the gap
-    at the opening of session t+1. ``from_date`` and ``to_date`` refer to the
-    realized target session (t+1), not the feature-origin session.
+    By default the training window expands from the beginning of the available
+    history. When ``max_history_rows`` is supplied, only the most recent N rows
+    available at each origin are used. This makes it possible to compare the
+    useful memory or half-life of each ticker without changing the prediction
+    model itself.
     """
     if step < 1:
         raise ValueError("step debe ser mayor o igual que 1")
     if not 0 < decision_threshold < 1:
         raise ValueError("decision_threshold debe estar entre 0 y 1")
+    if max_history_rows is not None and max_history_rows < min_history_rows:
+        raise ValueError("max_history_rows no puede ser menor que min_history_rows")
 
     ordered = features.sort_values("date").reset_index(drop=True).copy()
     records: list[dict[str, Any]] = []
@@ -175,7 +180,11 @@ def walk_forward_gap(
         ):
             continue
 
-        historical_slice = ordered.iloc[: origin_index + 1].copy()
+        start_index = 0
+        if max_history_rows is not None:
+            start_index = max(0, origin_index + 1 - max_history_rows)
+        historical_slice = ordered.iloc[start_index : origin_index + 1].copy()
+
         try:
             prediction = predict_next_gap(historical_slice)
         except ValueError:
@@ -210,6 +219,8 @@ def walk_forward_gap(
                 "lift_up": float(prediction.lift_up),
                 "lift_down": float(prediction.lift_down),
                 "training_rows": int(prediction.training_rows),
+                "memory_rows_requested": max_history_rows,
+                "memory_rows_available": int(len(historical_slice)),
                 "brier_up_internal": float(prediction.brier_up),
                 "brier_down_internal": float(prediction.brier_down),
                 "roc_auc_up_internal": float(prediction.roc_auc_up),

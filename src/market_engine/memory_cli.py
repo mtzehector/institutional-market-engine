@@ -51,7 +51,8 @@ def _evaluate(args: argparse.Namespace) -> int:
     all_rankings: list[pd.DataFrame] = []
     best_rows: list[pd.DataFrame] = []
     all_predictions: list[pd.DataFrame] = []
-    errors: list[dict[str, str]] = []
+    window_errors: list[pd.DataFrame] = []
+    ticker_errors: list[dict[str, str]] = []
 
     for position, ticker in enumerate(tickers, 1):
         print(f"\n[{position}/{len(tickers)}] Memoria adaptativa para {ticker}")
@@ -59,6 +60,8 @@ def _evaluate(args: argparse.Namespace) -> int:
             features, _ = _build_features_for_ticker(
                 ticker, download_start, evaluation_end, args.force_refresh
             )
+            print(f"{ticker}: histórico utilizable={len(features)} sesiones")
+
             result = evaluate_memory_windows(
                 features,
                 ticker=ticker,
@@ -82,17 +85,31 @@ def _evaluate(args: argparse.Namespace) -> int:
             if not result.predictions.empty:
                 all_predictions.append(result.predictions)
 
+            if not result.errors.empty:
+                errors = result.errors.copy()
+                errors["error_scope"] = "WINDOW"
+                window_errors.append(errors)
+                for _, error in errors.iterrows():
+                    print(
+                        f"{ticker}: ventana {error['memory_label']} omitida - "
+                        f"{error['error']}"
+                    )
+
             top = best.iloc[0]
             print(
                 f"{ticker}: mejor={top['memory_label']}, "
                 f"score={float(top['predictability_score']):.2f}"
             )
         except Exception as exc:
-            errors.append({"ticker": ticker, "error": str(exc)})
+            ticker_errors.append(
+                {"ticker": ticker, "error_scope": "TICKER", "error": str(exc)}
+            )
             print(f"{ticker}: ERROR - {exc}")
 
     if not best_rows:
-        raise ValueError(f"No se evaluó ningún ticker. Errores: {errors[:5]}")
+        raise ValueError(
+            f"No se evaluó ningún ticker. Errores: {ticker_errors[:5]}"
+        )
 
     comparison = pd.concat(all_rankings, ignore_index=True)
     best_frame = rank_best_memories(pd.concat(best_rows, ignore_index=True))
@@ -101,7 +118,17 @@ def _evaluate(args: argparse.Namespace) -> int:
         if all_predictions
         else pd.DataFrame()
     )
-    errors_frame = pd.DataFrame(errors)
+
+    error_frames: list[pd.DataFrame] = []
+    if window_errors:
+        error_frames.append(pd.concat(window_errors, ignore_index=True))
+    if ticker_errors:
+        error_frames.append(pd.DataFrame(ticker_errors))
+    errors_frame = (
+        pd.concat(error_frames, ignore_index=True, sort=False)
+        if error_frames
+        else pd.DataFrame()
+    )
 
     print("\nMEJOR MEMORIA POR TICKER")
     columns = [
@@ -121,10 +148,18 @@ def _evaluate(args: argparse.Namespace) -> int:
     if args.export:
         output = _resolve(args.output)
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            _excel_safe(best_frame).to_excel(writer, sheet_name="Mejor_Memoria", index=False)
-            _excel_safe(comparison).to_excel(writer, sheet_name="Comparacion_Ventanas", index=False)
-            _excel_safe(predictions).to_excel(writer, sheet_name="Predicciones", index=False)
-            _excel_safe(errors_frame).to_excel(writer, sheet_name="Errores", index=False)
+            _excel_safe(best_frame).to_excel(
+                writer, sheet_name="Mejor_Memoria", index=False
+            )
+            _excel_safe(comparison).to_excel(
+                writer, sheet_name="Comparacion_Ventanas", index=False
+            )
+            _excel_safe(predictions).to_excel(
+                writer, sheet_name="Predicciones", index=False
+            )
+            _excel_safe(errors_frame).to_excel(
+                writer, sheet_name="Errores", index=False
+            )
         print(f"Excel generado: {output}")
 
     return 0

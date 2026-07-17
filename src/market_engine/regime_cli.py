@@ -32,6 +32,22 @@ def _load_evaluation(path_text: str | None, sheet: str) -> pd.DataFrame:
     return frame
 
 
+def _ticker_memory_rows(
+    ticker: str,
+    evaluation_by_ticker: pd.DataFrame,
+    default_memory_rows: int,
+) -> int:
+    if evaluation_by_ticker.empty or ticker not in evaluation_by_ticker.index:
+        return default_memory_rows
+    row = evaluation_by_ticker.loc[ticker]
+    if isinstance(row, pd.DataFrame):
+        row = row.iloc[0]
+    value = row.get("memory_rows", default_memory_rows)
+    if pd.isna(value):
+        return default_memory_rows
+    return max(1, int(value))
+
+
 def _evaluate(args: argparse.Namespace) -> int:
     start = date.fromisoformat(args.from_date)
     end = date.fromisoformat(args.to_date)
@@ -42,26 +58,30 @@ def _evaluate(args: argparse.Namespace) -> int:
     evaluation = _load_evaluation(args.evaluation_input, args.evaluation_sheet)
     evaluation_by_ticker = evaluation.set_index("ticker") if not evaluation.empty else pd.DataFrame()
 
+    maximum_memory = args.memory_rows
+    if not evaluation.empty and "memory_rows" in evaluation.columns:
+        usable = pd.to_numeric(evaluation["memory_rows"], errors="coerce").dropna()
+        if not usable.empty:
+            maximum_memory = max(maximum_memory, int(usable.max()))
+
     summaries: list[pd.DataFrame] = []
     regimes: list[pd.DataFrame] = []
     crossings: list[pd.DataFrame] = []
     errors: list[dict[str, str]] = []
-    download_start = start - timedelta(days=max(365 * 6, args.memory_rows * 2))
+    download_start = start - timedelta(days=max(365 * 6, maximum_memory * 2))
 
     for position, ticker in enumerate(tickers, 1):
         print(f"[{position}/{len(tickers)}] Regímenes Smart Money para {ticker}")
         try:
+            memory_rows = _ticker_memory_rows(ticker, evaluation_by_ticker, args.memory_rows)
             features, _ = _build_features_for_ticker(
                 ticker, download_start, end, args.force_refresh
             )
-            features = features.loc[
-                (pd.to_datetime(features["date"]).dt.date >= start)
-                & (pd.to_datetime(features["date"]).dt.date <= end)
-            ].copy()
+            features = features.loc[pd.to_datetime(features["date"]).dt.date <= end].copy()
             result = analyze_smart_money_regimes(
                 features,
                 ticker=ticker,
-                memory_rows=args.memory_rows,
+                memory_rows=memory_rows,
                 lower_equilibrium=args.lower_equilibrium,
                 upper_equilibrium=args.upper_equilibrium,
                 minimum_persistence=args.minimum_persistence,
@@ -70,9 +90,16 @@ def _evaluate(args: argparse.Namespace) -> int:
                 high_volume_threshold=args.high_volume_threshold,
             )
             summary = result.summary.copy()
+            summary["requested_from_date"] = start
+            summary["requested_to_date"] = end
             if not evaluation.empty and ticker in evaluation_by_ticker.index:
                 evaluation_row = evaluation_by_ticker.loc[[ticker]].reset_index()
-                summary = summary.merge(evaluation_row, on="ticker", how="left", suffixes=("", "_evaluation"))
+                summary = summary.merge(
+                    evaluation_row,
+                    on="ticker",
+                    how="left",
+                    suffixes=("", "_evaluation"),
+                )
             summaries.append(summary)
             if not result.regimes.empty:
                 regimes.append(result.regimes)
@@ -81,7 +108,7 @@ def _evaluate(args: argparse.Namespace) -> int:
 
             row = summary.iloc[0]
             print(
-                f"{ticker}: cruces={int(row['equilibrium_cross_count'])}, "
+                f"{ticker}: memoria={memory_rows}, cruces={int(row['equilibrium_cross_count'])}, "
                 f"duración mediana={row['median_regime_duration']}, "
                 f"fuerza={row['median_institutional_regime_strength']}"
             )
@@ -100,6 +127,7 @@ def _evaluate(args: argparse.Namespace) -> int:
 
     display_columns = [
         "ticker",
+        "memory_rows",
         "equilibrium_cross_count",
         "crossings_per_100_sessions",
         "median_regime_duration",
@@ -133,7 +161,12 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--tickers")
     parser.add_argument("--from-date", required=True)
     parser.add_argument("--to-date", required=True)
-    parser.add_argument("--memory-rows", type=int, default=180)
+    parser.add_argument(
+        "--memory-rows",
+        type=int,
+        default=180,
+        help="Memoria por defecto; si el Excel contiene memory_rows se usa la óptima por ticker",
+    )
     parser.add_argument("--lower-equilibrium", type=float, default=49.0)
     parser.add_argument("--upper-equilibrium", type=float, default=51.0)
     parser.add_argument("--minimum-persistence", type=int, default=2)

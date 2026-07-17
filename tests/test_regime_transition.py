@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from market_engine.evaluation.regime_transition import (
+    build_coverage_audit,
     build_daily_market_states,
     build_transitions,
     run_regime_transition_laboratory,
@@ -49,19 +50,46 @@ def _frame(days: int = 30, tickers: int = 24) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_daily_states_detect_more_than_one_regime() -> None:
-    states = build_daily_market_states(_frame(), lookback=8)
+def test_coverage_audit_excludes_sparse_dates() -> None:
+    frame = _frame(days=12, tickers=24)
+    sparse_date = frame["origin_date"].max() + pd.offsets.BDay(1)
+    sparse = frame.iloc[[0]].copy()
+    sparse["origin_date"] = sparse_date
+    audit = build_coverage_audit(
+        pd.concat([frame, sparse], ignore_index=True),
+        minimum_universe_size=12,
+        minimum_coverage_ratio=0.70,
+    )
+    sparse_row = audit.loc[audit["origin_date"] == sparse_date].iloc[0]
+    assert not bool(sparse_row["is_synchronized_date"])
+    assert sparse_row["exclusion_reason"] == "INSUFFICIENT_TRANSVERSAL_COVERAGE"
+
+
+def test_daily_states_detect_more_than_one_confirmed_regime() -> None:
+    states = build_daily_market_states(
+        _frame(),
+        lookback=8,
+        minimum_universe_size=12,
+        minimum_regime_persistence=2,
+    )
     assert states["regime"].nunique() >= 2
     assert states["is_transition"].any()
     assert np.isfinite(states["transition_strength"]).all()
+    assert (states["universe_size"] == 24).all()
 
 
 def test_transitions_have_from_and_to_regime() -> None:
-    states = build_daily_market_states(_frame(), lookback=8)
+    states = build_daily_market_states(
+        _frame(),
+        lookback=8,
+        minimum_universe_size=12,
+        minimum_regime_persistence=2,
+    )
     transitions = build_transitions(states)
     assert not transitions.empty
     assert transitions["from_regime"].notna().all()
     assert transitions["to_regime"].notna().all()
+    assert (transitions["coverage_ratio"] >= 0.70).all()
 
 
 def test_regime_laboratory_builds_rankings_and_impact() -> None:
@@ -70,7 +98,11 @@ def test_regime_laboratory_builds_rankings_and_impact() -> None:
         lookback=8,
         minimum_observations=8,
         transition_radius=2,
+        minimum_universe_size=12,
+        minimum_coverage_ratio=0.70,
+        minimum_regime_persistence=2,
     )
+    assert not result.coverage_audit.empty
     assert not result.daily_states.empty
     assert not result.transitions.empty
     assert not result.regime_ranking.empty

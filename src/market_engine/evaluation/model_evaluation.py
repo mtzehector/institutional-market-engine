@@ -24,6 +24,43 @@ def _safe_divide(numerator: float, denominator: float) -> float:
     return float(numerator / denominator)
 
 
+def _precision_recall_f1(
+    true_positives: int,
+    actual_count: int,
+    predicted_count: int,
+) -> tuple[float, float, float]:
+    """Return class metrics with explicit rare-event miss semantics.
+
+    Precision is reported as zero when the model made no positive prediction.
+    Recall remains undefined when the class never occurred. F1 is zero whenever
+    a class occurred or was predicted but there was no usable precision/recall
+    balance. It is undefined only when the class is absent from both actual and
+    predicted observations.
+    """
+    precision = (
+        float(true_positives / predicted_count)
+        if predicted_count > 0
+        else 0.0
+    )
+    recall = (
+        float(true_positives / actual_count)
+        if actual_count > 0
+        else np.nan
+    )
+
+    if actual_count == 0 and predicted_count == 0:
+        return precision, recall, np.nan
+
+    recall_for_f1 = 0.0 if pd.isna(recall) else float(recall)
+    denominator = precision + recall_for_f1
+    f1 = (
+        float(2.0 * precision * recall_for_f1 / denominator)
+        if denominator > 0
+        else 0.0
+    )
+    return precision, recall, f1
+
+
 def _expected_calibration_error(
     probabilities: pd.Series,
     targets: pd.Series,
@@ -111,19 +148,20 @@ def _classification_metrics(frame: pd.DataFrame) -> dict[str, float | int]:
     f1_values: list[float] = []
     result: dict[str, float | int] = {}
 
-    for label, prefix in (("GAP_UP", "gap_up"), ("GAP_DOWN", "gap_down"), ("SIN_GAP", "no_gap")):
+    for label, prefix in (
+        ("GAP_UP", "gap_up"),
+        ("GAP_DOWN", "gap_down"),
+        ("SIN_GAP", "no_gap"),
+    ):
         actual_mask = actual == label
         predicted_mask = predicted == label
         tp = int((actual_mask & predicted_mask).sum())
         actual_count = int(actual_mask.sum())
         predicted_count = int(predicted_mask.sum())
-        precision = _safe_divide(tp, predicted_count)
-        recall = _safe_divide(tp, actual_count)
-        f1 = (
-            _safe_divide(2.0 * precision * recall, precision + recall)
-            if pd.notna(precision) and pd.notna(recall)
-            else np.nan
+        precision, recall, f1 = _precision_recall_f1(
+            tp, actual_count, predicted_count
         )
+
         result[f"actual_{prefix}_count"] = actual_count
         result[f"predicted_{prefix}_count"] = predicted_count
         result[f"{prefix}_precision"] = precision
@@ -140,20 +178,21 @@ def _classification_metrics(frame: pd.DataFrame) -> dict[str, float | int]:
     no_gap_baseline_accuracy = float((actual == "SIN_GAP").mean())
     directional_accuracy = float((actual == predicted).mean())
     result["no_gap_baseline_accuracy"] = no_gap_baseline_accuracy
-    result["incremental_accuracy_vs_no_gap"] = directional_accuracy - no_gap_baseline_accuracy
+    result["incremental_accuracy_vs_no_gap"] = (
+        directional_accuracy - no_gap_baseline_accuracy
+    )
 
     actual_rare = actual != "SIN_GAP"
     predicted_rare = predicted != "SIN_GAP"
     rare_tp = int((actual_rare & predicted_rare).sum())
-    rare_precision = _safe_divide(rare_tp, int(predicted_rare.sum()))
-    rare_recall = _safe_divide(rare_tp, int(actual_rare.sum()))
-    rare_f1 = (
-        _safe_divide(2.0 * rare_precision * rare_recall, rare_precision + rare_recall)
-        if pd.notna(rare_precision) and pd.notna(rare_recall)
-        else np.nan
+    actual_rare_count = int(actual_rare.sum())
+    predicted_rare_count = int(predicted_rare.sum())
+    rare_precision, rare_recall, rare_f1 = _precision_recall_f1(
+        rare_tp, actual_rare_count, predicted_rare_count
     )
-    result["actual_rare_event_count"] = int(actual_rare.sum())
-    result["predicted_rare_event_count"] = int(predicted_rare.sum())
+
+    result["actual_rare_event_count"] = actual_rare_count
+    result["predicted_rare_event_count"] = predicted_rare_count
     result["rare_event_precision"] = rare_precision
     result["rare_event_recall"] = rare_recall
     result["rare_event_f1"] = rare_f1
@@ -178,12 +217,18 @@ def _confidence_band_table(predictions: pd.DataFrame) -> pd.DataFrame:
             accuracy=("correct_direction", "mean"),
             average_confidence=("dominant_probability", "mean"),
             average_abs_gap=("actual_gap_pct", lambda values: values.abs().mean()),
-            actual_rare_events=("actual_direction", lambda values: (values != "SIN_GAP").sum()),
-            predicted_rare_events=("predicted_direction", lambda values: (values != "SIN_GAP").sum()),
+            actual_rare_events=(
+                "actual_direction", lambda values: (values != "SIN_GAP").sum()
+            ),
+            predicted_rare_events=(
+                "predicted_direction", lambda values: (values != "SIN_GAP").sum()
+            ),
         )
         .reset_index()
     )
-    result["calibration_difference"] = result["average_confidence"] - result["accuracy"]
+    result["calibration_difference"] = (
+        result["average_confidence"] - result["accuracy"]
+    )
     return result
 
 
@@ -208,7 +253,9 @@ def _recent_windows(predictions: pd.DataFrame, windows: tuple[int, ...]) -> pd.D
                 "rare_event_recall": metrics["rare_event_recall"],
                 "rare_event_f1": metrics["rare_event_f1"],
                 "no_gap_baseline_accuracy": metrics["no_gap_baseline_accuracy"],
-                "incremental_accuracy_vs_no_gap": metrics["incremental_accuracy_vs_no_gap"],
+                "incremental_accuracy_vs_no_gap": metrics[
+                    "incremental_accuracy_vs_no_gap"
+                ],
             }
         )
     return pd.DataFrame(rows)
@@ -220,9 +267,16 @@ def evaluate_predictions(
     high_confidence_threshold: float = 0.60,
 ) -> EvaluationResult:
     required = {
-        "target_date", "actual_gap_pct", "actual_gap_up", "actual_gap_down",
-        "actual_direction", "probability_up", "probability_down", "probability_no_gap",
-        "predicted_direction", "correct_direction",
+        "target_date",
+        "actual_gap_pct",
+        "actual_gap_up",
+        "actual_gap_down",
+        "actual_direction",
+        "probability_up",
+        "probability_down",
+        "probability_no_gap",
+        "predicted_direction",
+        "correct_direction",
     }
     missing = required - set(predictions.columns)
     if missing:
@@ -248,14 +302,24 @@ def evaluate_predictions(
     valid_skills = [value for value in (up_skill, down_skill) if pd.notna(value)]
     mean_brier_skill = float(np.mean(valid_skills)) if valid_skills else np.nan
 
-    ece_up = _expected_calibration_error(frame["probability_up"], frame["actual_gap_up"])
-    ece_down = _expected_calibration_error(frame["probability_down"], frame["actual_gap_down"])
+    ece_up = _expected_calibration_error(
+        frame["probability_up"], frame["actual_gap_up"]
+    )
+    ece_down = _expected_calibration_error(
+        frame["probability_down"], frame["actual_gap_down"]
+    )
     mean_ece = float(np.nanmean([ece_up, ece_down]))
     sample_reliability = min(1.0, observations / 250.0)
 
-    balanced_component = _score_component(float(classification["balanced_accuracy"]), 1.0 / 3.0, 1.0)
-    macro_f1_component = _score_component(float(classification["macro_f1"]), 0.0, 1.0)
-    rare_f1_component = _score_component(float(classification["rare_event_f1"]), 0.0, 1.0)
+    balanced_component = _score_component(
+        float(classification["balanced_accuracy"]), 1.0 / 3.0, 1.0
+    )
+    macro_f1_component = _score_component(
+        float(classification["macro_f1"]), 0.0, 1.0
+    )
+    rare_f1_component = _score_component(
+        float(classification["rare_event_f1"]), 0.0, 1.0
+    )
     incremental_component = _score_component(
         float(classification["incremental_accuracy_vs_no_gap"]), 0.0, 0.25
     )

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "institutional-market-engine"
-version = "0.9.3.1"
+version = "0.9.4"
 description = "Experimental institutional market analysis engine"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,6 +34,7 @@ market-evolutionary-universe = "market_engine.evolutionary_universe_cli:main"
 market-factor-contribution = "market_engine.factor_contribution_cli:main"
 market-champion-validation = "market_engine.champion_validation_cli:main"
 market-regime-transition = "market_engine.regime_transition_cli:main"
+market-market-memory = "market_engine.market_memory_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -65,11 +65,53 @@ def test_better_predictions_receive_higher_score() -> None:
     assert strong > weak
 
 
+def test_rare_event_metrics_are_reported() -> None:
+    summary = evaluate_predictions(_prediction_frame(), ticker="TEAM").summary.iloc[0]
+
+    assert summary["actual_gap_up_count"] > 0
+    assert summary["actual_gap_down_count"] > 0
+    assert summary["actual_no_gap_count"] > 0
+    assert 0 <= summary["balanced_accuracy"] <= 1
+    assert 0 <= summary["macro_f1"] <= 1
+    assert 0 <= summary["rare_event_f1"] <= 1
+    assert "no_gap_baseline_accuracy" in summary.index
+    assert "incremental_accuracy_vs_no_gap" in summary.index
+
+
+def test_always_no_gap_is_penalized_despite_high_accuracy() -> None:
+    frame = _prediction_frame(rows=100)
+    frame["predicted_direction"] = "SIN_GAP"
+    frame["correct_direction"] = frame["actual_direction"] == "SIN_GAP"
+    frame["probability_up"] = 0.05
+    frame["probability_down"] = 0.05
+    frame["probability_no_gap"] = 0.90
+
+    summary = evaluate_predictions(frame, ticker="BASELINE").summary.iloc[0]
+
+    assert summary["directional_accuracy"] == summary["no_gap_baseline_accuracy"]
+    assert summary["incremental_accuracy_vs_no_gap"] == 0
+    assert summary["rare_event_recall"] == 0
+    assert summary["rare_event_f1"] == 0
+    assert summary["predictability_score"] < 50
+
+
 def test_rank_ticker_evaluations_orders_score_descending() -> None:
     summaries = pd.DataFrame(
         [
-            {"ticker": "BBB", "predictability_score": 52.0, "observations": 100, "directional_accuracy": 0.55},
-            {"ticker": "AAA", "predictability_score": 81.0, "observations": 80, "directional_accuracy": 0.70},
+            {
+                "ticker": "BBB",
+                "predictability_score": 52.0,
+                "observations": 100,
+                "directional_accuracy": 0.55,
+                "rare_event_f1": 0.40,
+            },
+            {
+                "ticker": "AAA",
+                "predictability_score": 81.0,
+                "observations": 80,
+                "directional_accuracy": 0.70,
+                "rare_event_f1": 0.60,
+            },
         ]
     )
     ranking = rank_ticker_evaluations(summaries)

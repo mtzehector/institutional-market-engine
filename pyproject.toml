@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "institutional-market-engine"
-version = "0.9.4.2"
+version = "0.9.5"
 description = "Experimental institutional market analysis engine"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -37,6 +37,7 @@ market-regime-transition = "market_engine.regime_transition_cli:main"
 market-market-memory = "market_engine.market_memory_cli:main"
 market-memory-confidence = "market_engine.market_memory_confidence_cli:main"
 market-memory-decision = "market_engine.market_memory_decision_cli:main"
+market-intelligence-allocation = "market_engine.adaptive_intelligence_allocation_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

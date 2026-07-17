@@ -23,21 +23,26 @@ def _evaluate(args: argparse.Namespace) -> int:
         lookback=args.lookback,
         minimum_observations=args.minimum_observations,
         transition_radius=args.transition_radius,
+        minimum_universe_size=args.minimum_universe_size,
+        minimum_coverage_ratio=args.minimum_coverage_ratio,
+        minimum_regime_persistence=args.minimum_regime_persistence,
+    )
+
+    included = int(result.coverage_audit["is_synchronized_date"].sum())
+    excluded = int((~result.coverage_audit["is_synchronized_date"]).sum())
+    threshold = int(result.coverage_audit["effective_universe_threshold"].max())
+    reference = int(result.coverage_audit["reference_universe_size"].max())
+    print("\nCOBERTURA TRANSVERSAL")
+    print(
+        f"Universo de referencia={reference}, umbral efectivo={threshold}, "
+        f"fechas incluidas={included}, fechas excluidas={excluded}"
     )
 
     display = [
-        "regime",
-        "regime_rank",
-        "champion",
-        "regime_quality_score",
-        "observations",
-        "unique_origin_dates",
-        "predictability_score",
-        "rare_event_f1",
-        "balanced_accuracy",
-        "macro_f1",
-        "mean_brier_skill",
-        "mean_calibration_error",
+        "regime", "regime_rank", "champion", "regime_quality_score",
+        "observations", "unique_origin_dates", "predictability_score",
+        "rare_event_f1", "balanced_accuracy", "macro_f1",
+        "mean_brier_skill", "mean_calibration_error",
     ]
     print("\nREGIME TRANSITION LABORATORY — MEJOR PILOTO POR RÉGIMEN")
     if result.regime_ranking.empty:
@@ -49,16 +54,14 @@ def _evaluate(args: argparse.Namespace) -> int:
             ].to_string(index=False)
         )
 
-    print("\nTRANSICIONES DETECTADAS")
+    print("\nTRANSICIONES CONFIRMADAS")
     transition_display = [
-        "transition_date",
-        "from_regime",
-        "to_regime",
-        "prior_regime_origin_dates",
-        "transition_strength",
+        "transition_date", "from_regime", "to_regime",
+        "prior_regime_origin_dates", "transition_strength",
+        "universe_size", "coverage_ratio",
     ]
     if result.transitions.empty:
-        print("No se detectaron transiciones.")
+        print("No se detectaron transiciones confirmadas.")
     else:
         print(
             result.transitions[
@@ -70,6 +73,7 @@ def _evaluate(args: argparse.Namespace) -> int:
         output = _resolve(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            _excel_safe(result.coverage_audit).to_excel(writer, sheet_name="Auditoria_Cobertura", index=False)
             _excel_safe(result.daily_states).to_excel(writer, sheet_name="Estados_Diarios", index=False)
             _excel_safe(result.transitions).to_excel(writer, sheet_name="Transiciones", index=False)
             _excel_safe(result.regime_ranking).to_excel(writer, sheet_name="Ranking_por_Regimen", index=False)
@@ -87,8 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lookback", type=int, default=12)
     parser.add_argument("--minimum-observations", type=int, default=10)
     parser.add_argument("--transition-radius", type=int, default=3)
+    parser.add_argument("--minimum-universe-size", type=int, default=80)
+    parser.add_argument("--minimum-coverage-ratio", type=float, default=0.70)
+    parser.add_argument("--minimum-regime-persistence", type=int, default=2)
     parser.add_argument("--export", action="store_true")
-    parser.add_argument("--output", default="regime_transition_v093.xlsx")
+    parser.add_argument("--output", default="regime_transition_v0931.xlsx")
     parser.set_defaults(handler=_evaluate)
     return parser
 

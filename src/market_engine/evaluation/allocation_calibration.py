@@ -8,6 +8,7 @@ import pandas as pd
 from market_engine.evaluation.adaptive_intelligence_allocation import (
     run_adaptive_intelligence_allocation_laboratory,
 )
+from market_engine.evaluation.market_memory import build_date_champion_quality
 
 
 CALIBRATION_POLICIES = (
@@ -39,14 +40,20 @@ def _novelty_ratio(row: pd.Series) -> float:
     threshold = _numeric(row.get("novelty_veto_threshold"), np.nan)
     if pd.notna(threshold) and threshold > 1e-12:
         return max(novelty / threshold, 0.0)
-    similarity = np.clip(_numeric(row.get("similarity_confidence"), 50.0) / 100.0, 0.0, 1.0)
+    similarity = np.clip(
+        _numeric(row.get("similarity_confidence"), 50.0) / 100.0, 0.0, 1.0
+    )
     return max(1.0 - similarity, 0.0)
 
 
 def memory_weight_from_curve(row: pd.Series, policy: str) -> float:
     ratio = _novelty_ratio(row)
-    similarity = np.clip(_numeric(row.get("similarity_confidence"), 50.0) / 100.0, 0.0, 1.0)
-    stability = np.clip(_numeric(row.get("outcome_stability"), 50.0) / 100.0, 0.0, 1.0)
+    similarity = np.clip(
+        _numeric(row.get("similarity_confidence"), 50.0) / 100.0, 0.0, 1.0
+    )
+    stability = np.clip(
+        _numeric(row.get("outcome_stability"), 50.0) / 100.0, 0.0, 1.0
+    )
 
     if policy == "LINEAR":
         weight = 1.0 - 0.60 * ratio
@@ -83,32 +90,46 @@ def _date_diagnostics(base: pd.DataFrame) -> pd.DataFrame:
         memory_top = memory_order.iloc[0]
         current_top = current_order.iloc[0]
 
-        memory_second = _numeric(memory_order.iloc[1]["memory_score_percentile"], 0.0) if len(memory_order) > 1 else 0.0
-        current_second = _numeric(current_order.iloc[1]["current_intelligence_score"], 0.0) if len(current_order) > 1 else 0.0
-        memory_margin = max(_numeric(memory_top["memory_score_percentile"]) - memory_second, 0.0)
-        current_margin = max(_numeric(current_top["current_intelligence_score"]) - current_second, 0.0)
+        memory_second = (
+            _numeric(memory_order.iloc[1]["memory_score_percentile"], 0.0)
+            if len(memory_order) > 1
+            else 0.0
+        )
+        current_second = (
+            _numeric(current_order.iloc[1]["current_intelligence_score"], 0.0)
+            if len(current_order) > 1
+            else 0.0
+        )
+        memory_margin = max(
+            _numeric(memory_top["memory_score_percentile"]) - memory_second, 0.0
+        )
+        current_margin = max(
+            _numeric(current_top["current_intelligence_score"]) - current_second, 0.0
+        )
 
-        merged_vectors = sample[["memory_score_percentile", "current_intelligence_score"]].apply(
+        vectors = sample[["memory_score_percentile", "current_intelligence_score"]].apply(
             pd.to_numeric, errors="coerce"
         ).fillna(0.0)
         vector_disagreement = float(
-            (merged_vectors["memory_score_percentile"] - merged_vectors["current_intelligence_score"]).abs().mean()
+            (vectors["memory_score_percentile"] - vectors["current_intelligence_score"])
+            .abs()
+            .mean()
             / 100.0
         )
         top_mismatch = float(memory_top["champion"] != current_top["champion"])
-        disagreement = 100.0 * np.clip(0.65 * vector_disagreement + 0.35 * top_mismatch, 0.0, 1.0)
+        disagreement = 100.0 * np.clip(
+            0.65 * vector_disagreement + 0.35 * top_mismatch, 0.0, 1.0
+        )
 
-        memory_ambiguity = 100.0 - min(memory_margin, 100.0)
-        current_consistency = min(current_margin, 100.0)
         rows.append(
             {
                 "target_date": target_date,
                 "memory_top_champion": memory_top["champion"],
                 "current_top_champion": current_top["champion"],
                 "memory_internal_margin": memory_margin,
-                "memory_internal_ambiguity": memory_ambiguity,
+                "memory_internal_ambiguity": 100.0 - min(memory_margin, 100.0),
                 "current_intelligence_margin": current_margin,
-                "current_intelligence_consistency": current_consistency,
+                "current_intelligence_consistency": min(current_margin, 100.0),
                 "memory_current_disagreement": disagreement,
                 "top_recommendations_agree": bool(top_mismatch == 0.0),
             }
@@ -116,7 +137,9 @@ def _date_diagnostics(base: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_calibrated_allocations(base_allocations: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def build_calibrated_allocations(
+    base_allocations: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     if base_allocations.empty:
         return pd.DataFrame(), pd.DataFrame()
     base = base_allocations.loc[base_allocations["policy"] == "MEMORY_ONLY"].copy()
@@ -135,11 +158,12 @@ def build_calibrated_allocations(base_allocations: pd.DataFrame) -> tuple[pd.Dat
         sample["current_intelligence_weight"] = 1.0 - sample["memory_weight"]
         sample["allocation_score"] = (
             sample["memory_weight"] * sample["memory_score_percentile"]
-            + sample["current_intelligence_weight"] * sample["current_intelligence_score"]
+            + sample["current_intelligence_weight"]
+            * sample["current_intelligence_score"]
         )
-        sample["allocation_rank"] = sample.groupby("target_date")["allocation_score"].rank(
-            ascending=False, method="first"
-        )
+        sample["allocation_rank"] = sample.groupby("target_date")[
+            "allocation_score"
+        ].rank(ascending=False, method="first")
         frames.append(sample)
     return pd.concat(frames, ignore_index=True), diagnostics
 
@@ -155,18 +179,28 @@ def build_calibration_recommendations(
         columns={"origin_date": "target_date", "quality_score": "quality_score_actual"}
     )
     oracle = (
-        quality.sort_values(["target_date", "quality_score_actual"], ascending=[True, False])
+        quality.sort_values(
+            ["target_date", "quality_score_actual"], ascending=[True, False]
+        )
         .groupby("target_date", as_index=False)
         .first()[["target_date", "champion", "quality_score_actual"]]
-        .rename(columns={"champion": "oracle_champion", "quality_score_actual": "oracle_quality"})
+        .rename(
+            columns={
+                "champion": "oracle_champion",
+                "quality_score_actual": "oracle_quality",
+            }
+        )
     )
     universe = quality.loc[
-        quality["champion"] == "UNIVERSE", ["target_date", "quality_score_actual"]
+        quality["champion"] == "UNIVERSE",
+        ["target_date", "quality_score_actual"],
     ].rename(columns={"quality_score_actual": "universe_quality"})
     result = winners.merge(oracle, on="target_date", how="left").merge(
         universe, on="target_date", how="left"
     )
-    result["advantage_vs_universe"] = result["actual_quality_score"] - result["universe_quality"]
+    result["advantage_vs_universe"] = (
+        result["actual_quality_score"] - result["universe_quality"]
+    )
     result["oracle_regret"] = result["oracle_quality"] - result["actual_quality_score"]
     result["selected_was_oracle"] = result["champion"] == result["oracle_champion"]
 
@@ -175,7 +209,10 @@ def build_calibration_recommendations(
         result["memory_current_disagreement"], errors="coerce"
     ).clip(0, 100)
     novelty_confidence = 100.0 / (
-        1.0 + pd.to_numeric(result["global_novelty_score"], errors="coerce").clip(lower=0)
+        1.0
+        + pd.to_numeric(result["global_novelty_score"], errors="coerce").clip(
+            lower=0
+        )
     )
     memory_certainty = 100.0 - pd.to_numeric(
         result["memory_internal_ambiguity"], errors="coerce"
@@ -194,8 +231,12 @@ def build_calibration_recommendations(
     result = result.rename(columns={"champion": "recommended_champion"})
     if result.columns.duplicated().any():
         duplicated = result.columns[result.columns.duplicated()].tolist()
-        raise ValueError(f"Columnas duplicadas en recomendaciones calibradas: {duplicated}")
-    return result.sort_values(["target_date", "calibration_policy"]).reset_index(drop=True)
+        raise ValueError(
+            f"Columnas duplicadas en recomendaciones calibradas: {duplicated}"
+        )
+    return result.sort_values(
+        ["target_date", "calibration_policy"]
+    ).reset_index(drop=True)
 
 
 def compare_calibration_policies(recommendations: pd.DataFrame) -> pd.DataFrame:
@@ -210,7 +251,9 @@ def compare_calibration_policies(recommendations: pd.DataFrame) -> pd.DataFrame:
                 "mean_memory_weight": float(sample["memory_weight"].mean()),
                 "minimum_memory_weight": float(sample["memory_weight"].min()),
                 "maximum_memory_weight": float(sample["memory_weight"].max()),
-                "mean_adaptive_conviction_index": float(sample["adaptive_conviction_index"].mean()),
+                "mean_adaptive_conviction_index": float(
+                    sample["adaptive_conviction_index"].mean()
+                ),
                 "mean_advantage_vs_universe": float(advantage.mean()),
                 "positive_advantage_rate": float((advantage > 0).mean()),
                 "mean_oracle_regret": float(regret.mean()),
@@ -223,12 +266,17 @@ def compare_calibration_policies(recommendations: pd.DataFrame) -> pd.DataFrame:
         return comparison
     comparison["calibration_policy_score"] = 100.0 * (
         0.30 * comparison["positive_advantage_rate"].fillna(0.0)
-        + 0.25 * (comparison["mean_advantage_vs_universe"].clip(-50, 50) + 50) / 100
+        + 0.25
+        * (comparison["mean_advantage_vs_universe"].clip(-50, 50) + 50)
+        / 100
         + 0.20 * (1.0 - comparison["mean_oracle_regret"].clip(0, 100) / 100)
-        + 0.15 * (1.0 - comparison["maximum_oracle_regret"].clip(0, 100) / 100)
+        + 0.15
+        * (1.0 - comparison["maximum_oracle_regret"].clip(0, 100) / 100)
         + 0.10 * comparison["oracle_hit_rate"].fillna(0.0)
     )
-    return comparison.sort_values("calibration_policy_score", ascending=False).reset_index(drop=True)
+    return comparison.sort_values(
+        "calibration_policy_score", ascending=False
+    ).reset_index(drop=True)
 
 
 def run_allocation_calibration_laboratory(
@@ -250,29 +298,48 @@ def run_allocation_calibration_laboratory(
         calibration_history=calibration_history,
         novelty_percentile=novelty_percentile,
     )
-    allocations, disagreement = build_calibrated_allocations(base.allocation_by_date)
+    allocations, disagreement = build_calibrated_allocations(
+        base.allocation_by_date
+    )
+    date_quality = build_date_champion_quality(selections)
     recommendations = build_calibration_recommendations(
-        allocations, base.allocation_by_date[[
-            "target_date", "champion", "actual_quality_score"
-        ]].drop_duplicates()
-        .rename(columns={"target_date": "origin_date", "actual_quality_score": "quality_score"})
+        allocations, date_quality
     )
     comparison = compare_calibration_policies(recommendations)
-    calibration_report = recommendations[[
-        "target_date", "calibration_policy", "memory_weight",
-        "current_intelligence_weight", "global_novelty_score",
-        "novelty_veto_threshold", "recommended_champion",
-        "advantage_vs_universe", "oracle_regret",
-    ]].copy()
-    conviction_report = recommendations[[
-        "target_date", "calibration_policy", "recommended_champion",
-        "adaptive_conviction_index", "allocation_score",
-        "memory_current_disagreement", "memory_internal_ambiguity",
-        "current_intelligence_consistency", "advantage_vs_universe", "oracle_regret",
-    ]].copy()
+    calibration_report = recommendations[
+        [
+            "target_date",
+            "calibration_policy",
+            "memory_weight",
+            "current_intelligence_weight",
+            "global_novelty_score",
+            "novelty_veto_threshold",
+            "recommended_champion",
+            "advantage_vs_universe",
+            "oracle_regret",
+        ]
+    ].copy()
+    conviction_report = recommendations[
+        [
+            "target_date",
+            "calibration_policy",
+            "recommended_champion",
+            "adaptive_conviction_index",
+            "allocation_score",
+            "memory_current_disagreement",
+            "memory_internal_ambiguity",
+            "current_intelligence_consistency",
+            "advantage_vs_universe",
+            "oracle_regret",
+        ]
+    ].copy()
     summary = comparison.head(1).copy()
     if not summary.empty:
-        summary = summary.rename(columns={"calibration_policy": "recommended_calibration_policy"})
+        summary = summary.rename(
+            columns={
+                "calibration_policy": "recommended_calibration_policy"
+            }
+        )
     return AllocationCalibrationResult(
         recommendations=recommendations,
         allocation_by_date=allocations,

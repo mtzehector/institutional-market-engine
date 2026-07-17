@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "institutional-market-engine"
-version = "0.8.3"
+version = "0.8.4"
 description = "Experimental institutional market analysis engine"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +29,7 @@ market-snapshot = "market_engine.snapshot_cli:main"
 market-universe = "market_engine.universe_cli:main"
 market-regime = "market_engine.regime_cli:main"
 market-adaptive-universe = "market_engine.adaptive_universe_cli:main"
+market-universe-tournament = "market_engine.universe_tournament_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

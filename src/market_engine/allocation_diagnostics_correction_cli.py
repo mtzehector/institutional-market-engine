@@ -7,9 +7,17 @@ import pandas as pd
 
 from market_engine.cli import _excel_safe
 from market_engine.config import PROJECT_ROOT
+from market_engine.evaluation.allocation_calibration import AllocationCalibrationResult
 from market_engine.evaluation.allocation_diagnostics_correction import (
     run_allocation_diagnostics_correction_laboratory,
 )
+
+
+# Compatibility shim for v0.9.5.2. The diagnostics implementation originally
+# expected a nested ``calibration_result`` attribute, while the calibration
+# laboratory already returns AllocationCalibrationResult directly.
+if not hasattr(AllocationCalibrationResult, "calibration_result"):
+    AllocationCalibrationResult.calibration_result = property(lambda self: self)  # type: ignore[attr-defined]
 
 
 def _resolve(path_text: str) -> Path:

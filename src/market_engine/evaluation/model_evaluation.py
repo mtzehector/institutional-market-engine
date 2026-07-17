@@ -290,6 +290,8 @@ def evaluate_predictions(
         "high_confidence_accuracy": high_conf_accuracy,
         "high_confidence_observations": high_conf_observations,
         **classification,
+        "gap_up_cases": classification["actual_gap_up_count"],
+        "gap_down_cases": classification["actual_gap_down_count"],
         "brier_up": up_brier,
         "baseline_brier_up": up_baseline_brier,
         "brier_skill_up": up_skill,

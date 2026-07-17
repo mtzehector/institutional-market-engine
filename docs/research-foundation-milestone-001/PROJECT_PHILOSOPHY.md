@@ -95,6 +95,10 @@ Debe demostrarse fuera de muestra, después de costos, deslizamiento, restriccio
 
 La evidencia surge de muestras suficientes, repetición, calibración y múltiples regímenes.
 
+### 13. Las nuevas interrogantes son valiosas
+
+La sabiduría consiste en mejorar continuamente la calidad de las preguntas que somos capaces de formular.
+
 ## Método científico del proyecto
 
 ```text

@@ -153,9 +153,15 @@ def _memory_weight(row: pd.Series, policy: str) -> float:
     if policy == "MEMORY_ONLY":
         return 1.0
 
-    confidence = np.clip(_numeric(row.get("memory_confidence_score"), 50.0) / 100.0, 0.0, 1.0)
-    similarity = np.clip(_numeric(row.get("similarity_confidence"), 50.0) / 100.0, 0.0, 1.0)
-    stability = np.clip(_numeric(row.get("outcome_stability"), 50.0) / 100.0, 0.0, 1.0)
+    confidence = np.clip(
+        _numeric(row.get("memory_confidence_score"), 50.0) / 100.0, 0.0, 1.0
+    )
+    similarity = np.clip(
+        _numeric(row.get("similarity_confidence"), 50.0) / 100.0, 0.0, 1.0
+    )
+    stability = np.clip(
+        _numeric(row.get("outcome_stability"), 50.0) / 100.0, 0.0, 1.0
+    )
     novelty = max(_numeric(row.get("global_novelty_score"), 0.0), 0.0)
     threshold = _numeric(row.get("novelty_veto_threshold"), np.nan)
     if pd.notna(threshold) and threshold > 0:
@@ -187,8 +193,15 @@ def build_allocations(
 ) -> pd.DataFrame:
     memory = _normalize_memory_scores(memory_scores)
     combined = memory.merge(current_scores, on=["target_date", "champion"], how="inner")
+
+    # La recomendación original de la memoria es contexto, no el ganador de la
+    # asignación. Renombrarla antes del merge evita crear dos columnas llamadas
+    # ``recommended_champion`` cuando el campeón asignado se canoniza después.
+    recommendation_context = recommendations.rename(
+        columns={"recommended_champion": "memory_recommended_champion"}
+    )
     combined = combined.merge(
-        recommendations,
+        recommendation_context,
         on="target_date",
         how="inner",
         suffixes=("", "_recommendation"),
@@ -198,18 +211,21 @@ def build_allocations(
     )[["target_date", "champion", "actual_quality_score"]]
     combined = combined.merge(actual, on=["target_date", "champion"], how="left")
 
-    rows: list[dict[str, object]] = []
+    rows: list[pd.DataFrame] = []
     for policy in ALLOCATION_POLICIES:
         sample = combined.copy()
-        sample["memory_weight"] = sample.apply(lambda row: _memory_weight(row, policy), axis=1)
+        sample["memory_weight"] = sample.apply(
+            lambda row: _memory_weight(row, policy), axis=1
+        )
         sample["current_intelligence_weight"] = 1.0 - sample["memory_weight"]
         sample["allocation_score"] = (
             sample["memory_weight"] * sample["memory_score_percentile"]
-            + sample["current_intelligence_weight"] * sample["current_intelligence_score"]
+            + sample["current_intelligence_weight"]
+            * sample["current_intelligence_score"]
         )
-        sample["allocation_rank"] = sample.groupby("target_date")["allocation_score"].rank(
-            ascending=False, method="first"
-        )
+        sample["allocation_rank"] = sample.groupby("target_date")[
+            "allocation_score"
+        ].rank(ascending=False, method="first")
         sample["policy"] = policy
         rows.append(sample)
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
@@ -226,7 +242,9 @@ def build_policy_recommendations(
         columns={"origin_date": "target_date", "quality_score": "quality_score_actual"}
     )
     oracle = (
-        quality.sort_values(["target_date", "quality_score_actual"], ascending=[True, False])
+        quality.sort_values(
+            ["target_date", "quality_score_actual"], ascending=[True, False]
+        )
         .groupby("target_date", as_index=False)
         .first()[["target_date", "champion", "quality_score_actual"]]
         .rename(
@@ -236,16 +254,24 @@ def build_policy_recommendations(
             }
         )
     )
-    universe = quality.loc[quality["champion"] == "UNIVERSE", ["target_date", "quality_score_actual"]].rename(
-        columns={"quality_score_actual": "universe_quality"}
-    )
+    universe = quality.loc[
+        quality["champion"] == "UNIVERSE",
+        ["target_date", "quality_score_actual"],
+    ].rename(columns={"quality_score_actual": "universe_quality"})
     result = winners.merge(oracle, on="target_date", how="left").merge(
         universe, on="target_date", how="left"
     )
-    result["advantage_vs_universe"] = result["actual_quality_score"] - result["universe_quality"]
+    result["advantage_vs_universe"] = (
+        result["actual_quality_score"] - result["universe_quality"]
+    )
     result["oracle_regret"] = result["oracle_quality"] - result["actual_quality_score"]
     result["selected_was_oracle"] = result["champion"] == result["oracle_champion"]
     result = result.rename(columns={"champion": "recommended_champion"})
+
+    if result.columns.duplicated().any():
+        duplicates = result.columns[result.columns.duplicated()].tolist()
+        raise ValueError(f"Columnas duplicadas en recomendaciones: {duplicates}")
+
     return result.sort_values(["target_date", "policy"]).reset_index(drop=True)
 
 
@@ -273,11 +299,17 @@ def compare_allocation_policies(recommendations: pd.DataFrame) -> pd.DataFrame:
         return comparison
     comparison["allocation_policy_score"] = 100.0 * (
         0.35 * comparison["positive_advantage_rate"].fillna(0.0)
-        + 0.25 * (comparison["mean_advantage_vs_universe"].clip(-50, 50) + 50) / 100
-        + 0.25 * (1.0 - comparison["mean_oracle_regret"].clip(0, 100) / 100)
-        + 0.15 * (1.0 - comparison["maximum_oracle_regret"].clip(0, 100) / 100)
+        + 0.25
+        * (comparison["mean_advantage_vs_universe"].clip(-50, 50) + 50)
+        / 100
+        + 0.25
+        * (1.0 - comparison["mean_oracle_regret"].clip(0, 100) / 100)
+        + 0.15
+        * (1.0 - comparison["maximum_oracle_regret"].clip(0, 100) / 100)
     )
-    return comparison.sort_values("allocation_policy_score", ascending=False).reset_index(drop=True)
+    return comparison.sort_values(
+        "allocation_policy_score", ascending=False
+    ).reset_index(drop=True)
 
 
 def run_adaptive_intelligence_allocation_laboratory(
@@ -314,7 +346,9 @@ def run_adaptive_intelligence_allocation_laboratory(
     champions = sorted(
         set(memory.champion_scores["champion"].astype(str)) - {"UNIVERSE"}
     )
-    current_scores = score_champions_from_current_state(intelligence_states, champions)
+    current_scores = score_champions_from_current_state(
+        intelligence_states, champions
+    )
     allocations = build_allocations(
         recommendations,
         memory.champion_scores,
@@ -327,7 +361,9 @@ def run_adaptive_intelligence_allocation_laboratory(
     comparison = compare_allocation_policies(policy_recommendations)
     summary = comparison.head(1).copy()
     if not summary.empty:
-        summary = summary.rename(columns={"policy": "recommended_allocation_policy"})
+        summary = summary.rename(
+            columns={"policy": "recommended_allocation_policy"}
+        )
     return AdaptiveIntelligenceAllocationResult(
         recommendations=policy_recommendations,
         allocation_by_date=allocations,

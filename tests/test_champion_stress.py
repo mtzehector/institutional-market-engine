@@ -46,7 +46,7 @@ def _states(days: int = 28) -> pd.DataFrame:
     })
 
 
-def test_stress_engine_builds_episode_metrics() -> None:
+def test_stress_engine_builds_calibrated_episode_metrics() -> None:
     result = run_champion_stress_laboratory(
         _selections(),
         _states(),
@@ -57,18 +57,25 @@ def test_stress_engine_builds_episode_metrics() -> None:
     )
     assert not result.stress_episodes.empty
     required = {
+        "weakening_start_date",
         "deterioration_velocity",
+        "damage_velocity",
         "maximum_damage",
         "time_to_bottom",
         "recovery_efficiency",
+        "relapse_observable",
         "relapse_within_horizon",
+        "trigger_coherence_score",
         "stress_score",
     }
     assert required.issubset(result.stress_episodes.columns)
     assert result.stress_episodes["stress_score"].between(0, 100).all()
+    unobservable = result.stress_episodes.loc[~result.stress_episodes["relapse_observable"]]
+    if not unobservable.empty:
+        assert unobservable["relapse_within_horizon"].isna().all()
 
 
-def test_stress_engine_builds_current_and_group_reports() -> None:
+def test_stress_engine_separates_historical_and_active_stress() -> None:
     result = run_champion_stress_laboratory(
         _selections(),
         _states(),
@@ -77,7 +84,13 @@ def test_stress_engine_builds_current_and_group_reports() -> None:
     )
     assert not result.current_stress.empty
     assert result.current_stress["champion"].is_unique
-    assert result.current_stress["stress_risk_score"].between(0, 100).all()
+    for column in [
+        "historical_stress_susceptibility",
+        "current_active_stress_score",
+        "stress_risk_score",
+    ]:
+        assert result.current_stress[column].between(0, 100).all()
+    assert "current_stress_outlook" in result.current_stress
     assert not result.champion_summary.empty
     assert not result.family_summary.empty
     assert not result.summary.empty

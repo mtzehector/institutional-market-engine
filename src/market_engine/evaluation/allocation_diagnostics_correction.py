@@ -9,6 +9,7 @@ from market_engine.evaluation.allocation_calibration import (
     AllocationCalibrationResult,
     run_allocation_calibration_laboratory,
 )
+from market_engine.evaluation.market_memory import build_date_champion_quality
 
 
 FINALIST_POLICIES = ("BOUNDED_ADAPTIVE", "LOGISTIC", "PIECEWISE")
@@ -74,13 +75,20 @@ def _family_distance(left: str, right: str) -> float:
     return 0.5 if frozenset({left, right}) in partial_pairs else 1.0
 
 
-def _build_corrected_diagnostics(base_allocations: pd.DataFrame) -> pd.DataFrame:
-    base = base_allocations.loc[
-        base_allocations["policy"] == "MEMORY_ONLY"
-    ].copy()
+def _unique_memory_allocations(base_allocations: pd.DataFrame) -> pd.DataFrame:
+    """Return one canonical MEMORY_ONLY row per date and champion."""
+    base = base_allocations.loc[base_allocations["policy"] == "MEMORY_ONLY"].copy()
     if base.empty:
         raise ValueError("No existe la política MEMORY_ONLY en la asignación base")
+    return (
+        base.sort_values(["target_date", "champion", "memory_score"], ascending=[True, True, False])
+        .drop_duplicates(["target_date", "champion"], keep="first")
+        .reset_index(drop=True)
+    )
 
+
+def _build_corrected_diagnostics(base_allocations: pd.DataFrame) -> pd.DataFrame:
+    base = _unique_memory_allocations(base_allocations)
     rows: list[dict[str, object]] = []
     raw_current_margins: list[float] = []
 
@@ -102,14 +110,13 @@ def _build_corrected_diagnostics(base_allocations: pd.DataFrame) -> pd.DataFrame
             _safe_ratio(memory_margin, memory_top_score), 0.0, 1.0
         )
         memory_certainty = 100.0 * memory_margin_ratio
-        memory_ambiguity = 100.0 - memory_certainty
 
         current_top_score = _numeric(current_top.get("current_intelligence_score"))
         current_second_score = _numeric(current_second.get("current_intelligence_score"))
         current_margin = max(current_top_score - current_second_score, 0.0)
-        raw_current_margins.append(current_margin)
-        history = pd.Series(raw_current_margins[:-1], dtype=float)
+        history = pd.Series(raw_current_margins, dtype=float)
         current_consistency = 100.0 * _causal_percentile_rank(history, current_margin)
+        raw_current_margins.append(current_margin)
 
         memory_champion = str(memory_top["champion"])
         current_champion = str(current_top["champion"])
@@ -127,7 +134,11 @@ def _build_corrected_diagnostics(base_allocations: pd.DataFrame) -> pd.DataFrame
             ).abs().mean()
         )
         corrected_disagreement = float(
-            np.clip(0.55 * family_disagreement + 0.45 * vector_disagreement, 0.0, 100.0)
+            np.clip(
+                0.55 * family_disagreement + 0.45 * vector_disagreement,
+                0.0,
+                100.0,
+            )
         )
 
         rows.append(
@@ -142,7 +153,7 @@ def _build_corrected_diagnostics(base_allocations: pd.DataFrame) -> pd.DataFrame
                 "memory_real_margin": memory_margin,
                 "memory_margin_ratio": memory_margin_ratio,
                 "memory_certainty_corrected": memory_certainty,
-                "memory_ambiguity_corrected": memory_ambiguity,
+                "memory_ambiguity_corrected": 100.0 - memory_certainty,
                 "current_top_score": current_top_score,
                 "current_second_score": current_second_score,
                 "current_raw_margin": current_margin,
@@ -165,8 +176,13 @@ def _warmup_weight(row: pd.Series, policy: str) -> float:
 
     if pd.notna(threshold) and threshold > 1e-12:
         ratio = novelty / threshold
-        return float(np.clip(0.50 * (1.0 - 0.55 * min(ratio, 1.8)) + 0.50 * similarity, 0.15, 0.90))
-
+        return float(
+            np.clip(
+                0.50 * (1.0 - 0.55 * min(ratio, 1.8)) + 0.50 * similarity,
+                0.15,
+                0.90,
+            )
+        )
     if policy == "SIMILARITY_FALLBACK":
         return float(np.clip(similarity, 0.15, 0.90))
     if policy == "FIXED_60":
@@ -174,21 +190,26 @@ def _warmup_weight(row: pd.Series, policy: str) -> float:
     if policy == "EXPANDING_THRESHOLD":
         expanding = _numeric(row.get("expanding_novelty_threshold"), np.nan)
         if pd.notna(expanding) and expanding > 1e-12:
-            ratio = novelty / expanding
-            return float(np.clip(1.0 - 0.55 * ratio, 0.15, 0.90))
+            return float(np.clip(1.0 - 0.55 * novelty / expanding, 0.15, 0.90))
         return 0.60
     raise ValueError(f"Política warm-up desconocida: {policy}")
 
 
-def _add_expanding_thresholds(recommendations: pd.DataFrame) -> pd.DataFrame:
-    data = recommendations.sort_values("target_date").reset_index(drop=True).copy()
+def _date_thresholds(base: pd.DataFrame) -> pd.DataFrame:
+    """Calculate one causal expanding novelty threshold per date."""
+    dates = (
+        base[["target_date", "global_novelty_score"]]
+        .drop_duplicates("target_date")
+        .sort_values("target_date")
+        .reset_index(drop=True)
+    )
     thresholds: list[float] = []
-    novelty = pd.to_numeric(data["global_novelty_score"], errors="coerce")
-    for index in range(len(data)):
+    novelty = pd.to_numeric(dates["global_novelty_score"], errors="coerce")
+    for index in range(len(dates)):
         history = novelty.iloc[:index].dropna()
         thresholds.append(float(history.quantile(0.80)) if len(history) >= 2 else np.nan)
-    data["expanding_novelty_threshold"] = thresholds
-    return data
+    dates["expanding_novelty_threshold"] = thresholds
+    return dates[["target_date", "expanding_novelty_threshold"]]
 
 
 def _recompute_recommendations(
@@ -196,12 +217,13 @@ def _recompute_recommendations(
     diagnostics: pd.DataFrame,
     date_quality: pd.DataFrame,
 ) -> pd.DataFrame:
-    base = base_allocations.loc[base_allocations["policy"] == "MEMORY_ONLY"].copy()
+    base = _unique_memory_allocations(base_allocations)
     base = base.merge(diagnostics, on="target_date", how="left")
+    base = base.merge(_date_thresholds(base), on="target_date", how="left")
 
     frames: list[pd.DataFrame] = []
     for warmup_policy in WARMUP_POLICIES:
-        sample = _add_expanding_thresholds(base)
+        sample = base.copy()
         sample["warmup_policy"] = warmup_policy
         sample["memory_weight_corrected"] = sample.apply(
             lambda row: _warmup_weight(row, warmup_policy), axis=1
@@ -246,6 +268,9 @@ def _recompute_recommendations(
     result = winners.merge(oracle, on="target_date", how="left").merge(
         universe, on="target_date", how="left"
     )
+    if result["universe_quality"].isna().all():
+        raise ValueError("No se pudo recuperar la calidad de UNIVERSE desde Selecciones")
+
     result["advantage_vs_universe"] = (
         result["actual_quality_score"] - result["universe_quality"]
     )
@@ -361,13 +386,9 @@ def run_allocation_diagnostics_correction_laboratory(
         novelty_percentile=novelty_percentile,
     )
 
-    base_allocations = calibration.calibration_result.allocation_by_date
+    base_allocations = calibration.allocation_by_date
     diagnostics = _build_corrected_diagnostics(base_allocations)
-    date_quality = base_allocations[
-        ["target_date", "champion", "actual_quality_score"]
-    ].drop_duplicates().rename(
-        columns={"target_date": "origin_date", "actual_quality_score": "quality_score"}
-    )
+    date_quality = build_date_champion_quality(selections)
     recommendations = _recompute_recommendations(
         base_allocations, diagnostics, date_quality
     )
@@ -385,17 +406,19 @@ def run_allocation_diagnostics_correction_laboratory(
         recommendations=recommendations,
         policy_comparison=policy_comparison,
         diagnostics_by_date=diagnostics,
-        family_disagreement=diagnostics[[
-            "target_date",
-            "memory_top_champion",
-            "current_top_champion",
-            "memory_top_family",
-            "current_top_family",
-            "family_disagreement",
-            "vector_disagreement",
-            "memory_current_disagreement_corrected",
-            "top_families_agree",
-        ]].copy(),
+        family_disagreement=diagnostics[
+            [
+                "target_date",
+                "memory_top_champion",
+                "current_top_champion",
+                "memory_top_family",
+                "current_top_family",
+                "family_disagreement",
+                "vector_disagreement",
+                "memory_current_disagreement_corrected",
+                "top_families_agree",
+            ]
+        ].copy(),
         warmup_comparison=warmup_comparison,
         conviction_validation=conviction_validation,
         summary=summary,

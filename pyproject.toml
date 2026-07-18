@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "institutional-market-engine"
-version = "0.9.7"
+version = "0.9.7.1"
 description = "Experimental institutional market analysis engine"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,6 +42,7 @@ market-allocation-calibration = "market_engine.allocation_calibration_cli:main"
 market-allocation-diagnostics = "market_engine.allocation_diagnostics_correction_cli:main"
 market-champion-lifecycle = "market_engine.champion_lifecycle_cli:main"
 market-champion-survival = "market_engine.champion_survival_cli:main"
+market-survival-utility = "market_engine.survival_utility_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

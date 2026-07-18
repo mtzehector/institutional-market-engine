@@ -31,6 +31,7 @@ def _evaluate(args: argparse.Namespace) -> int:
         short_window=args.short_window,
         long_window=args.long_window,
         minimum_history=args.minimum_history,
+        minimum_state_persistence=args.minimum_state_persistence,
     )
 
     print("\nCHAMPION LIFE CYCLE ENGINE — ESTADO ACTUAL")
@@ -40,6 +41,8 @@ def _evaluate(args: argparse.Namespace) -> int:
         columns = [
             "champion",
             "lifecycle_state",
+            "performance_level",
+            "performance_direction",
             "recommended_action",
             "lifecycle_health_score",
             "deployment_score",
@@ -79,8 +82,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--short-window", type=int, default=3)
     parser.add_argument("--long-window", type=int, default=6)
     parser.add_argument("--minimum-history", type=int, default=4)
+    parser.add_argument("--minimum-state-persistence", type=int, default=2)
     parser.add_argument("--export", action="store_true")
-    parser.add_argument("--output", default="champion_lifecycle_v096.xlsx")
+    parser.add_argument("--output", default="champion_lifecycle_v0961.xlsx")
     parser.set_defaults(handler=_evaluate)
     return parser
 

@@ -4,6 +4,8 @@ import pandas as pd
 
 from market_engine.evaluation.champion_lifecycle import (
     LIFECYCLE_STATES,
+    PERFORMANCE_DIRECTIONS,
+    PERFORMANCE_LEVELS,
     build_champion_lifecycle_history,
     run_champion_lifecycle_laboratory,
 )
@@ -56,18 +58,42 @@ def _states(days: int = 12) -> pd.DataFrame:
 
 def test_lifecycle_history_is_causal_and_classified() -> None:
     history = build_champion_lifecycle_history(
-        _selections(), short_window=3, long_window=5, minimum_history=4
+        _selections(),
+        short_window=3,
+        long_window=5,
+        minimum_history=4,
+        minimum_state_persistence=2,
     )
     assert not history.empty
     assert set(history["lifecycle_state"]).issubset(set(LIFECYCLE_STATES))
+    assert set(history["performance_level"]).issubset(set(PERFORMANCE_LEVELS))
+    assert set(history["performance_direction"]).issubset(set(PERFORMANCE_DIRECTIONS))
     first = history.sort_values("origin_date").groupby("champion").head(1)
     assert (first["lifecycle_state"] == "DISCOVERY").all()
     assert history["lifecycle_health_score"].between(0, 100).all()
+    assert history["relative_quality_ratio"].notna().all()
+
+
+def test_lifecycle_persistence_reduces_transition_frequency() -> None:
+    unstable = build_champion_lifecycle_history(
+        _selections(), short_window=3, long_window=5, minimum_history=4,
+        minimum_state_persistence=1,
+    )
+    stable = build_champion_lifecycle_history(
+        _selections(), short_window=3, long_window=5, minimum_history=4,
+        minimum_state_persistence=2,
+    )
+    assert int(stable["is_transition"].sum()) <= int(unstable["is_transition"].sum())
 
 
 def test_lifecycle_laboratory_builds_current_status_and_regime_report() -> None:
     result = run_champion_lifecycle_laboratory(
-        _selections(), _states(), short_window=3, long_window=5, minimum_history=4
+        _selections(),
+        _states(),
+        short_window=3,
+        long_window=5,
+        minimum_history=4,
+        minimum_state_persistence=2,
     )
     assert not result.current_status.empty
     assert result.current_status["champion"].is_unique
@@ -75,3 +101,4 @@ def test_lifecycle_laboratory_builds_current_status_and_regime_report() -> None:
     assert result.current_status["recommended_action"].notna().all()
     assert not result.regime_performance.empty
     assert not result.summary.empty
+    assert result.summary.iloc[0]["transition_rate"] <= 1.0

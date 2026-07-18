@@ -38,18 +38,18 @@ def _evaluate(args: argparse.Namespace) -> int:
         relapse_horizon=args.relapse_horizon,
     )
 
-    print("\nCHAMPION STRESS ENGINE — ESTADO ACTUAL")
+    print("\nCHAMPION STRESS ENGINE v0.9.8.2 — ESTADO ACTUAL")
     if result.current_stress.empty:
         print("No hubo datos suficientes para medir estrés.")
     else:
         columns = [
             "champion",
             "lifecycle_state",
+            "historical_stress_susceptibility",
+            "current_active_stress_score",
+            "current_stress_outlook",
             "stress_risk_score",
             "stress_risk_outlook",
-            "mean_stress_score",
-            "median_deterioration_velocity",
-            "median_maximum_damage",
             "relapse_rate",
         ]
         print(result.current_stress[columns].to_string(index=False))
@@ -60,11 +60,12 @@ def _evaluate(args: argparse.Namespace) -> int:
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             _excel_safe(result.summary).to_excel(writer, sheet_name="Resumen", index=False)
             _excel_safe(result.current_stress).to_excel(writer, sheet_name="Estres_Actual", index=False)
+            _excel_safe(result.active_episodes).to_excel(writer, sheet_name="Episodios_Activos", index=False)
             _excel_safe(result.stress_episodes).to_excel(writer, sheet_name="Episodios_Estres", index=False)
             _excel_safe(result.champion_summary).to_excel(writer, sheet_name="Estres_Campeon", index=False)
             _excel_safe(result.family_summary).to_excel(writer, sheet_name="Estres_Familia", index=False)
-            _excel_safe(result.trigger_analysis).to_excel(writer, sheet_name="Disparadores_Recuperacion", index=False)
-            _excel_safe(result.relapse_analysis).to_excel(writer, sheet_name="Riesgo_Recaida", index=False)
+            _excel_safe(result.trigger_analysis).to_excel(writer, sheet_name="Coherencia_Disparadores", index=False)
+            _excel_safe(result.relapse_analysis).to_excel(writer, sheet_name="Recaida_Censurada", index=False)
             _excel_safe(result.resilience_result.current_resilience).to_excel(
                 writer, sheet_name="Resiliencia_Actual", index=False
             )
@@ -89,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trigger-lookback", type=int, default=2)
     parser.add_argument("--relapse-horizon", type=int, default=3)
     parser.add_argument("--export", action="store_true")
-    parser.add_argument("--output", default="champion_stress_v0981.xlsx")
+    parser.add_argument("--output", default="champion_stress_v0982.xlsx")
     parser.set_defaults(handler=_evaluate)
     return parser
 

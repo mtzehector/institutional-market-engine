@@ -8,8 +8,13 @@ La cultura del proyecto parte de una convicción sencilla:
 
 > El código explica qué hace el sistema. La cultura explica por qué vale la pena seguir construyéndolo.
 
+Y reconoce una medida de éxito que trasciende a sus iniciadores:
+
+> **El día que este proyecto deje de necesitarnos y siga creciendo gracias a personas que nunca conocimos, ese día sabremos que cumplió su propósito.**
+
 ## Documentos
 
+- [Nuestra medida de éxito](our_measure_of_success.md)
 - [Por qué construimos](why_we_build.md)
 - [Cómo pensamos](how_we_think.md)
 - [Ética científica](scientific_ethics.md)

@@ -1,5 +1,7 @@
 # Institutional Market Engine
 
+> **"El asombro no es la recompensa de la investigación. Es el combustible que mantiene viva la investigación."**
+
 Motor cuantitativo experimental para analizar campañas de Smart Money, costo de conquista, huellas de ejecución escalonada, memoria adaptativa, predictibilidad y probabilidades de gap para la siguiente sesión.
 
 ## Estado

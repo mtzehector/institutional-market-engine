@@ -1,4 +1,5 @@
 # The Institutional Market Engine Manifesto
+*A living document for everyone who chooses to continue exploring.*
 
 > *"El asombro no es la recompensa de la investigación.*
 >

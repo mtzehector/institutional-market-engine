@@ -4,6 +4,18 @@
 > *"El asombro no es la recompensa de la investigación.*
 >
 > *Es el combustible que mantiene viva la investigación."*
+## Contents
+
+- [Why We Exist](#why-we-exist)
+- [What We Believe](#what-we-believe)
+- [Our Purpose](#our-purpose)
+- [Our Philosophy](#our-philosophy)
+- [To Every Future Researcher](#to-every-future-researcher)
+- [Our Promise](#our-promise)
+- [The Legacy We Hope To Leave](#the-legacy-we-hope-to-leave)
+- [Our Measure of Success](#our-measure-of-success)
+- [One Final Thought](#one-final-thought)
+- [With Gratitude](#with-gratitude)
 
 ---
 
@@ -181,3 +193,10 @@ Perhaps yours will change it again.
 > **This laboratory does not belong to those who started it.**
 >
 > **It belongs to everyone who chooses to move the frontier of understanding one question farther.**
+---
+
+*Institutional Market Engine*
+
+*Research Manifesto*
+
+*Living document — evolves together with the laboratory.*

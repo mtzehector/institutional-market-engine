@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "institutional-market-engine"
-version = "1.0.0a3"
+version = "1.0.0a4"
 description = "Experimental institutional market analysis engine"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -49,6 +49,7 @@ market-champion-council = "market_engine.champion_intelligence_council_cli:main"
 market-morphology = "market_engine.market_morphology_cli:main"
 market-sample-fidelity = "market_engine.sample_morphology_fidelity_cli:main"
 market-morphology-visualizer = "market_engine.market_morphology_visualizer_cli:main"
+market-sentinel-divergence = "market_engine.sentinel_divergence_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

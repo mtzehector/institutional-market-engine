@@ -1,0 +1,199 @@
+//@version=6
+// Adaptive Range Opportunity Hunter [SMI] v1.3
+// Original Stochastic Momentum Index code by UCSgears.
+// Original source also credits Surjith S M for part of the overbought/oversold visualization.
+// Adaptation and research logic by mtzehector.
+//
+// Default 40-bar window: empirical local price reference that often spans
+// roughly 1–2 recent price cycles. It is not a universal cycle length.
+//
+// Distance from Local Low % is not predicted loss.
+// Distance from Local High % is not expected profit.
+// Standardized Benefit % is a scenario distance to the current local high,
+// not an expected return or forecast.
+
+indicator("Adaptive Range Opportunity Hunter [SMI] v1.3", shorttitle="AR Opportunity Hunter", overlay=false, precision=2)
+
+// INPUTS
+groupSmi = "SMI"
+kLength = input.int(5, "K Period", minval=1, maxval=50, group=groupSmi)
+dLength = input.int(3, "D / Smoothing Period", minval=1, maxval=50, group=groupSmi)
+overbought = input.float(40.0, "Overbought", minval=10, maxval=90, step=5, group=groupSmi)
+oversold = input.float(-40.0, "Oversold", minval=-90, maxval=-10, step=5, group=groupSmi)
+
+groupLocal = "Local Price Reference"
+localWindow = input.int(40, "Local Reference Window (bars)", minval=10, maxval=500, group=groupLocal, tooltip="Default 40 bars was selected empirically because it often spans roughly 1–2 recent price cycles.")
+distanceThreshold = input.float(3.0, "Local Extreme Distance %", minval=0.1, maxval=20, step=0.1, group=groupLocal, tooltip="3% means the close lies inside the bottom 3% of the recent local high-low range. It is a normalized range-position measurement.")
+confirmOnClose = input.bool(true, "Confirm events on bar close", group=groupLocal)
+
+groupDisplay = "Display"
+showSmi = input.bool(true, "Show SMI", group=groupDisplay)
+showDistanceLines = input.bool(true, "Show local distance lines", group=groupDisplay)
+showThresholdLine = input.bool(true, "Show reference threshold", group=groupDisplay)
+showMidReference = input.bool(false, "Show 50% midpoint reference", group=groupDisplay)
+showBackground = input.bool(true, "Highlight SMI extreme zones", group=groupDisplay)
+showDashboard = input.bool(true, "Show dashboard", group=groupDisplay)
+
+// SMI
+lowestLow = ta.lowest(low, kLength)
+highestHigh = ta.highest(high, kLength)
+smiRange = highestHigh - lowestLow
+relativeClose = close - (highestHigh + lowestLow) / 2.0
+avgRelative = ta.ema(ta.ema(relativeClose, dLength), dLength)
+avgRange = ta.ema(ta.ema(smiRange, dLength), dLength)
+smi = avgRange != 0.0 ? (avgRelative / (avgRange / 2.0)) * 100.0 : 0.0
+smiSignal = ta.ema(smi, dLength)
+
+isOversold = smi <= oversold
+isOverbought = smi >= overbought
+
+// LOCAL PRICE REFERENCE
+localHigh = ta.highest(high, localWindow)
+localLow = ta.lowest(low, localWindow)
+localRange = localHigh - localLow
+rangePositionPct = localRange != 0.0 ? (close - localLow) / localRange * 100.0 : 50.0
+
+distanceFromLocalLowPct = math.max(0.0, math.min(100.0, rangePositionPct))
+distanceFromLocalHighPct = math.max(0.0, math.min(100.0, 100.0 - rangePositionPct))
+
+
+//=============================================================================
+// 4B. STANDARDIZED BENEFIT SCENARIO
+//=============================================================================
+//
+// This is NOT an expected return or a probability-weighted forecast.
+//
+// Question answered:
+// If price is evaluated at the configured lower threshold of the CURRENT
+// local range, what percentage rise would be required to reach the CURRENT
+// local high?
+//
+// thresholdReferencePrice = localLow + threshold% of localRange
+//
+// standardizedBenefitPct = (localHigh / thresholdReferencePrice - 1) * 100
+//
+// This makes simultaneous opportunities comparable across tickers because
+// all are evaluated from the same normalized entry reference.
+//
+// currentUpsideToLocalHighPct is also exposed from the actual close.
+
+thresholdReferencePrice = (
+    localLow
+    + localRange * distanceThreshold / 100.0
+)
+
+standardizedBenefitPct = (
+    thresholdReferencePrice > 0.0
+    ? (localHigh / thresholdReferencePrice - 1.0) * 100.0
+    : na
+)
+
+currentUpsideToLocalHighPct = (
+    close > 0.0
+    ? (localHigh / close - 1.0) * 100.0
+    : na
+)
+
+// PURE THRESHOLD CONDITIONS
+nearLocalLow = distanceFromLocalLowPct <= distanceThreshold
+nearLocalHigh = distanceFromLocalHighPct <= distanceThreshold
+barConfirmed = not confirmOnClose or barstate.isconfirmed
+nearLocalLowConfirmed = nearLocalLow and barConfirmed
+nearLocalHighConfirmed = nearLocalHigh and barConfirmed
+
+nearLocalLowTrigger = nearLocalLowConfirmed and not nearLocalLowConfirmed[1]
+nearLocalHighTrigger = nearLocalHighConfirmed and not nearLocalHighConfirmed[1]
+
+// COMPOSITE CONDITIONS
+longCondition = isOversold and nearLocalLowConfirmed
+upperCondition = isOverbought and nearLocalHighConfirmed
+
+longTrigger = longCondition and not longCondition[1]
+upperTrigger = upperCondition and not upperCondition[1]
+
+// SMI VISUALIZATION
+upperSignalBand = smiSignal > overbought ? smiSignal : overbought
+lowerSignalBand = smiSignal < oversold ? smiSignal : oversold
+
+pUpper = plot(showSmi ? overbought : na, color=color.new(color.red, 70), title="Overbought")
+pUpperSignal = plot(showSmi ? upperSignalBand : na, color=color.white, title="Upper SMI Signal")
+pLower = plot(showSmi ? oversold : na, color=color.new(color.green, 70), title="Oversold")
+pLowerSignal = plot(showSmi ? lowerSignalBand : na, color=color.white, title="Lower SMI Signal")
+
+fill(pUpper, pUpperSignal, color=color.new(color.red, 90))
+fill(pLower, pLowerSignal, color=color.new(color.green, 90))
+
+plot(showSmi ? smi : na, color=color.fuchsia, linewidth=1, title="SMI")
+plot(showSmi ? smiSignal : na, color=color.gray, linewidth=1, title="SMI Signal")
+plot(showSmi ? 0.0 : na, color=color.new(color.blue, 70), title="SMI Zero")
+plot(showSmi and ta.cross(smi, smiSignal) ? smi : na, style=plot.style_circles, linewidth=2, title="SMI Cross")
+
+// CONTINUOUS LOCAL-DISTANCE LINES
+// Both series remain positive from 0 to 100.
+// Using lines instead of histograms makes both measurements visible at all times.
+plot(showDistanceLines ? distanceFromLocalLowPct : na, color=color.red, linewidth=2, title="Distance from Local Low %")
+plot(showDistanceLines ? distanceFromLocalHighPct : na, color=color.lime, linewidth=2, title="Distance from Local High %")
+plot(showThresholdLine ? distanceThreshold : na, color=color.new(color.yellow, 15), linewidth=2, title="Local Extreme Threshold %")
+plot(showMidReference ? 50.0 : na, color=color.new(color.gray, 70), linewidth=1, title="50% Midpoint")
+
+// EVENT MARKERS
+plotshape(nearLocalLowTrigger, title="Entered Local Low Zone", location=location.bottom, style=shape.circle, size=size.tiny, color=color.orange, text="LOW", textcolor=color.white)
+plotshape(longTrigger, title="SMI + Local Low Opportunity", location=location.bottom, style=shape.triangleup, size=size.small, color=color.lime, text="SMI", textcolor=color.black)
+plotshape(nearLocalHighTrigger, title="Entered Local High Zone", location=location.top, style=shape.circle, size=size.tiny, color=color.orange, text="HIGH", textcolor=color.white)
+plotshape(upperTrigger, title="SMI + Local High Extreme", location=location.top, style=shape.triangledown, size=size.small, color=color.red, text="SMI", textcolor=color.white)
+
+// BACKGROUND
+bgcolor(showBackground ? (isOverbought ? color.new(color.red, 90) : isOversold ? color.new(color.green, 90) : na) : na)
+
+// DASHBOARD
+var table dashboard = table.new(position.top_right, 2, 10, bgcolor=color.new(color.gray, 25), frame_color=color.black, border_width=1)
+
+if barstate.islast and showDashboard
+    table.clear(dashboard, 0, 0, 1, 9)
+    table.cell(dashboard, 0, 0, "Metric", text_color=color.white, bgcolor=color.gray)
+    table.cell(dashboard, 1, 0, "Value", text_color=color.white, bgcolor=color.gray)
+    table.cell(dashboard, 0, 1, "SMI")
+    table.cell(dashboard, 1, 1, str.tostring(smi, "#.1"))
+    table.cell(dashboard, 0, 2, "Local window")
+    table.cell(dashboard, 1, 2, str.tostring(localWindow) + " bars")
+    table.cell(dashboard, 0, 3, "From local low %")
+    table.cell(dashboard, 1, 3, str.tostring(distanceFromLocalLowPct, "#.1"), text_color=color.red)
+    table.cell(dashboard, 0, 4, "From local high %")
+    table.cell(dashboard, 1, 4, str.tostring(distanceFromLocalHighPct, "#.1"), text_color=color.lime)
+    table.cell(dashboard, 0, 5, "Threshold")
+    table.cell(dashboard, 1, 5, str.tostring(distanceThreshold, "#.1") + "%")
+    table.cell(dashboard, 0, 6, "Near local low?")
+    table.cell(dashboard, 1, 6, nearLocalLowConfirmed ? "YES" : "NO", text_color=nearLocalLowConfirmed ? color.lime : color.white)
+    contextText = longCondition ? "SMI + LOW" : upperCondition ? "SMI + HIGH" : isOversold ? "OVERSOLD" : isOverbought ? "OVERBOUGHT" : "NEUTRAL"
+    contextColor = longCondition ? color.lime : upperCondition ? color.red : color.white
+    table.cell(dashboard, 0, 7, "Std benefit to high %")
+    table.cell(dashboard, 1, 7, str.tostring(standardizedBenefitPct, "#.1"), text_color=color.aqua)
+
+    table.cell(dashboard, 0, 8, "Current upside %")
+    table.cell(dashboard, 1, 8, str.tostring(currentUpsideToLocalHighPct, "#.1"), text_color=color.aqua)
+
+    table.cell(dashboard, 0, 9, "Context")
+    table.cell(dashboard, 1, 9, contextText, text_color=contextColor)
+
+// ALERTS
+alertcondition(nearLocalLowTrigger, title="Entered Local Low Zone", message="Adaptive Range Opportunity Hunter: {{ticker}} entered the configured local-low zone at {{close}}.")
+alertcondition(longTrigger, title="SMI Oversold + Local Low Opportunity", message="Adaptive Range Opportunity Hunter: {{ticker}} triggered SMI oversold + local-low condition at {{close}}.")
+alertcondition(nearLocalHighTrigger, title="Entered Local High Zone", message="Adaptive Range Opportunity Hunter: {{ticker}} entered the configured local-high zone at {{close}}.")
+alertcondition(upperTrigger, title="SMI Overbought + Local High Extreme", message="Adaptive Range Opportunity Hunter: {{ticker}} triggered SMI overbought + local-high condition at {{close}}.")
+
+// DATA WINDOW / SCREENER OUTPUTS
+plot(distanceFromLocalLowPct, title="DATA Distance Low %", display=display.data_window)
+plot(distanceFromLocalHighPct, title="DATA Distance High %", display=display.data_window)
+plot(rangePositionPct, title="DATA Local Range Position %", display=display.data_window)
+plot(smi, title="DATA SMI", display=display.data_window)
+plot(standardizedBenefitPct, title="DATA Standardized Benefit to Local High %", display=display.data_window)
+plot(currentUpsideToLocalHighPct, title="DATA Current Upside to Local High %", display=display.data_window)
+plot(thresholdReferencePrice, title="DATA Threshold Reference Price", display=display.data_window)
+plot(localHigh, title="DATA Local High Price", display=display.data_window)
+
+plot(nearLocalLowConfirmed ? 1.0 : 0.0, title="SCAN Near Local Low", display=display.data_window)
+plot(longCondition ? 1.0 : 0.0, title="SCAN SMI + Local Low", display=display.data_window)
+plot(nearLocalLowConfirmed ? standardizedBenefitPct : na, title="SCAN Benefit % Near Local Low", display=display.data_window)
+plot(longCondition ? standardizedBenefitPct : na, title="SCAN Benefit % SMI + Local Low", display=display.data_window)
+plot(nearLocalLowTrigger ? 1.0 : 0.0, title="SCAN New Local Low Trigger", display=display.data_window)
+plot(longTrigger ? 1.0 : 0.0, title="SCAN New SMI + Low Trigger", display=display.data_window)

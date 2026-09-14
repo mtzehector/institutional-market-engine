@@ -1,0 +1,262 @@
+//@version=6
+indicator("Adaptive Range Recovery Monitor [SMI] v0.3", shorttitle="ARR Monitor v0.3", overlay=false, precision=2)
+
+// === INPUTS ===
+groupCore = "Core"
+dailyWindow = input.int(40, "Daily local range window", minval=10, maxval=200, group=groupCore)
+smiK = input.int(5, "Daily SMI K", minval=1, maxval=50, group=groupCore)
+smiD = input.int(3, "Daily SMI D / smoothing", minval=1, maxval=50, group=groupCore)
+oversold = input.float(-40.0, "Daily SMI oversold threshold", minval=-90, maxval=-10, step=5, group=groupCore)
+lowZonePct = input.float(3.0, "Observation zone <= %", minval=0.1, maxval=20, step=0.1, group=groupCore)
+confirmationPct = input.float(10.0, "Confirmation AFTER observation zone (%)", minval=1, maxval=50, step=0.5, group=groupCore)
+
+groupDynamics = "Dynamics"
+velocityLen1H = input.int(4, "1H velocity lookback", minval=2, maxval=24, group=groupDynamics)
+velocityLen4H = input.int(3, "4H velocity lookback", minval=2, maxval=12, group=groupDynamics)
+accelLen1H = input.int(3, "1H acceleration lookback", minval=1, maxval=12, group=groupDynamics)
+accelLen4H = input.int(2, "4H acceleration lookback", minval=1, maxval=8, group=groupDynamics)
+pivotLeft = input.int(2, "Pivot low left bars", minval=1, maxval=10, group=groupDynamics)
+pivotRight = input.int(2, "Pivot low right bars", minval=1, maxval=10, group=groupDynamics)
+velocity1HFloor = input.float(0.0, "Min 1H velocity for CONFIRMED", step=0.1, group=groupDynamics)
+velocity4HFloor = input.float(0.0, "Min 4H velocity for CONFIRMED", step=0.1, group=groupDynamics)
+
+groupSession = "Session"
+regularSession = input.session("0930-1600", "Regular session", group=groupSession)
+sessionTimezone = input.string("America/New_York", "Session timezone", group=groupSession)
+
+groupDisplay = "Display"
+showValidation = input.bool(true, "Show 1H vs 1D validation", group=groupDisplay)
+showPricePosition = input.bool(true, "Show distance from low %", group=groupDisplay)
+showDailySmi = input.bool(true, "Show daily SMI", group=groupDisplay)
+showDynamics = input.bool(true, "Show velocity/acceleration", group=groupDisplay)
+showDashboard = input.bool(true, "Show dashboard", group=groupDisplay)
+showBackground = input.bool(true, "Highlight states", group=groupDisplay)
+
+// === HELPERS ===
+f_smi(_k, _d) =>
+    ll = ta.lowest(low, _k)
+    hh = ta.highest(high, _k)
+    rr = hh - ll
+    rel = close - (hh + ll) / 2.0
+    avgRel = ta.ema(ta.ema(rel, _d), _d)
+    avgRng = ta.ema(ta.ema(rr, _d), _d)
+    avgRng != 0.0 ? (avgRel / (avgRng / 2.0)) * 100.0 : 0.0
+
+f_slope(_src, _len) =>
+    _len > 1 ? (_src - _src[_len - 1]) / (_len - 1) : 0.0
+
+// === DAILY CONTEXT ===
+dailySmi = request.security(syminfo.tickerid, "D", f_smi(smiK, smiD), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+dailyHigh40 = request.security(syminfo.tickerid, "D", ta.highest(high, dailyWindow), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+dailyLow40 = request.security(syminfo.tickerid, "D", ta.lowest(low, dailyWindow), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+// === REBUILD 40 REGULAR SESSIONS FROM 1H ===
+inRegularSession = not na(time(timeframe.period, regularSession, sessionTimezone))
+sessionDayId = year(time, sessionTimezone) * 10000 + month(time, sessionTimezone) * 100 + dayofmonth(time, sessionTimezone)
+
+var float currentSessionHigh = na
+var float currentSessionLow = na
+var int currentSessionId = na
+var sessionHighs = array.new_float()
+var sessionLows = array.new_float()
+
+newRegularSession = inRegularSession and (na(currentSessionId) or sessionDayId != currentSessionId)
+
+if newRegularSession
+    if not na(currentSessionId) and not na(currentSessionHigh) and not na(currentSessionLow)
+        array.push(sessionHighs, currentSessionHigh)
+        array.push(sessionLows, currentSessionLow)
+        while array.size(sessionHighs) > math.max(dailyWindow - 1, 1)
+            array.shift(sessionHighs)
+        while array.size(sessionLows) > math.max(dailyWindow - 1, 1)
+            array.shift(sessionLows)
+    currentSessionId := sessionDayId
+    currentSessionHigh := high
+    currentSessionLow := low
+else if inRegularSession
+    currentSessionHigh := na(currentSessionHigh) ? high : math.max(currentSessionHigh, high)
+    currentSessionLow := na(currentSessionLow) ? low : math.min(currentSessionLow, low)
+
+float reconstructedHigh40 = currentSessionHigh
+float reconstructedLow40 = currentSessionLow
+
+if array.size(sessionHighs) > 0
+    for i = 0 to array.size(sessionHighs) - 1
+        reconstructedHigh40 := na(reconstructedHigh40) ? array.get(sessionHighs, i) : math.max(reconstructedHigh40, array.get(sessionHighs, i))
+if array.size(sessionLows) > 0
+    for i = 0 to array.size(sessionLows) - 1
+        reconstructedLow40 := na(reconstructedLow40) ? array.get(sessionLows, i) : math.min(reconstructedLow40, array.get(sessionLows, i))
+
+sessionCount = array.size(sessionHighs) + (not na(currentSessionHigh) and not na(currentSessionLow) ? 1 : 0)
+reconstructionReady = sessionCount >= dailyWindow
+
+deltaHighPct = reconstructionReady and dailyHigh40 != 0.0 ? (reconstructedHigh40 - dailyHigh40) / dailyHigh40 * 100.0 : na
+deltaLowPct = reconstructionReady and dailyLow40 != 0.0 ? (reconstructedLow40 - dailyLow40) / dailyLow40 * 100.0 : na
+
+// === LIVE POSITION ===
+liveRange = reconstructedHigh40 - reconstructedLow40
+distanceLowPct = reconstructionReady and liveRange > 0.0 ? (close - reconstructedLow40) / liveRange * 100.0 : na
+distanceLowPctClamped = na(distanceLowPct) ? na : math.max(0.0, math.min(100.0, distanceLowPct))
+dailyOversold = dailySmi <= oversold
+insideLowZone = reconstructionReady and distanceLowPctClamped <= lowZonePct
+
+// === EPISODE ===
+episodeStartCondition = dailyOversold and insideLowZone and inRegularSession
+episodeStartTrigger = episodeStartCondition and not episodeStartCondition[1]
+
+var bool episodeActive = false
+var float episodeHighFrozen = na
+var float episodeLow = na
+var int episodeStartBar = na
+
+if episodeStartTrigger
+    episodeActive := true
+    episodeHighFrozen := reconstructedHigh40
+    episodeLow := reconstructedLow40
+    episodeStartBar := bar_index
+
+if episodeActive and inRegularSession
+    episodeLow := na(episodeLow) ? low : math.min(episodeLow, low)
+
+episodeRange = episodeActive and not na(episodeHighFrozen) and not na(episodeLow) ? episodeHighFrozen - episodeLow : na
+episodePositionPct = episodeActive and not na(episodeRange) and episodeRange > 0.0 ? (close - episodeLow) / episodeRange * 100.0 : na
+episodePositionPctClamped = na(episodePositionPct) ? na : math.max(0.0, math.min(100.0, episodePositionPct))
+recoveryAfterZonePct = episodeActive and not na(episodePositionPctClamped) ? math.max(episodePositionPctClamped - lowZonePct, 0.0) : na
+confirmationRangePositionPct = lowZonePct + confirmationPct
+confirmationPrice = episodeActive and not na(episodeRange) ? episodeLow + episodeRange * confirmationRangePositionPct / 100.0 : na
+
+// === DYNAMICS ===
+velocity1H = episodeActive and not na(episodeRange) and episodeRange > 0.0 ? f_slope(close, velocityLen1H) / episodeRange * 100.0 : na
+acceleration1H = not na(velocity1H) ? f_slope(velocity1H, accelLen1H) : na
+
+slope4HRaw = request.security(syminfo.tickerid, "240", f_slope(close, velocityLen4H), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+velocity4H = episodeActive and not na(episodeRange) and episodeRange > 0.0 ? slope4HRaw / episodeRange * 100.0 : na
+acceleration4H = not na(velocity4H) ? f_slope(velocity4H, accelLen4H) : na
+
+// === LOCAL LOW STRUCTURE ===
+pivotLow = ta.pivotlow(low, pivotLeft, pivotRight)
+var float lastPivotLow = na
+var float previousPivotLow = na
+
+if episodeStartTrigger
+    lastPivotLow := na
+    previousPivotLow := na
+
+if episodeActive and not na(pivotLow)
+    previousPivotLow := lastPivotLow
+    lastPivotLow := pivotLow
+
+higherLow = not na(lastPivotLow) and not na(previousPivotLow) and lastPivotLow > previousPivotLow
+lowerLow = not na(lastPivotLow) and not na(previousPivotLow) and lastPivotLow < previousPivotLow
+lowStructure = na(lastPivotLow) or na(previousPivotLow) ? "INSUFFICIENT" : higherLow ? "HIGHER LOW" : lowerLow ? "LOWER LOW" : "EQUAL LOW"
+
+// === DYNAMIC CONFIRMATION ===
+geometricConfirmed = episodeActive and not na(recoveryAfterZonePct) and recoveryAfterZonePct >= confirmationPct
+dynamicConfirmed = geometricConfirmed and not na(velocity1H) and not na(velocity4H) and velocity1H > velocity1HFloor and velocity4H > velocity4HFloor
+confirmationEvent = dynamicConfirmed and not dynamicConfirmed[1]
+
+stateText = dynamicConfirmed ? "CONFIRMED" :
+     geometricConfirmed and velocity4H < 0 ? "GEOMETRIC / 4H DOWN" :
+     geometricConfirmed ? "GEOMETRIC / WEAK" :
+     episodeActive and velocity4H < 0 and acceleration4H > 0 ? "OBSERVE / DECELERATING" :
+     episodeActive and velocity4H < 0 ? "OBSERVE / FALLING" :
+     episodeActive and recoveryAfterZonePct > 0 ? "RECOVERY" :
+     episodeActive ? "OBSERVATION" :
+     dailyOversold ? "DAILY OVERSOLD" : "IDLE"
+
+stateColor = dynamicConfirmed ? color.lime : geometricConfirmed ? color.yellow : episodeActive ? color.orange : dailyOversold ? color.fuchsia : color.white
+
+remainingUpsidePct = episodeActive and close > 0.0 and not na(episodeHighFrozen) ? (episodeHighFrozen / close - 1.0) * 100.0 : na
+
+// === VISUALS ===
+plot(episodeActive ? recoveryAfterZonePct : na, title="Recovery After Observation Zone %", color=color.aqua, linewidth=3)
+plot(confirmationPct, title="Confirmation After Zone %", color=color.yellow, linewidth=2)
+plot(showPricePosition ? distanceLowPctClamped : na, title="Current Distance from Reconstructed Low %", color=color.red, linewidth=1)
+plot(showDailySmi ? dailySmi : na, title="Daily SMI", color=color.fuchsia, linewidth=1)
+plot(showDailySmi ? oversold : na, title="Daily SMI Oversold Threshold", color=color.new(color.fuchsia, 65), linewidth=1)
+plot(showDynamics ? velocity1H : na, title="Velocity 1H", color=color.lime, linewidth=2)
+plot(showDynamics ? velocity4H : na, title="Velocity 4H", color=color.orange, linewidth=2)
+plot(showDynamics ? acceleration1H : na, title="Acceleration 1H", color=color.new(color.lime, 55), linewidth=1)
+plot(showDynamics ? acceleration4H : na, title="Acceleration 4H", color=color.new(color.orange, 55), linewidth=1)
+plot(showDynamics ? 0.0 : na, title="Dynamics Zero", color=color.new(color.gray, 65), linewidth=1)
+plot(showValidation ? deltaHighPct : na, title="Validation Delta High %", color=color.blue, linewidth=1)
+plot(showValidation ? deltaLowPct : na, title="Validation Delta Low %", color=color.purple, linewidth=1)
+
+plotshape(episodeStartTrigger, title="Observation Episode Started", style=shape.circle, location=location.bottom, size=size.small, color=color.orange, text="OBS", textcolor=color.white)
+plotshape(confirmationEvent, title="Dynamic Recovery Confirmed", style=shape.triangleup, location=location.bottom, size=size.small, color=color.lime, text="CONF", textcolor=color.black)
+plotshape(episodeActive and higherLow and not higherLow[1], title="Higher Low Detected", style=shape.circle, location=location.bottom, size=size.tiny, color=color.lime, text="HL", textcolor=color.black)
+plotshape(episodeActive and lowerLow and not lowerLow[1], title="Lower Low Detected", style=shape.circle, location=location.bottom, size=size.tiny, color=color.red, text="LL", textcolor=color.white)
+
+bgcolor(showBackground ? (dynamicConfirmed ? color.new(color.green, 88) : geometricConfirmed ? color.new(color.yellow, 92) : episodeActive and velocity4H < 0 ? color.new(color.red, 94) : episodeActive ? color.new(color.orange, 94) : dailyOversold ? color.new(color.purple, 95) : na) : na)
+
+// === DASHBOARD ===
+var table dash = table.new(position.top_right, 2, 20, bgcolor=color.new(color.gray, 20), frame_color=color.black, border_width=1)
+
+if barstate.islast and showDashboard
+    table.clear(dash, 0, 0, 1, 19)
+    table.cell(dash, 0, 0, "Metric", text_color=color.white, bgcolor=color.gray)
+    table.cell(dash, 1, 0, "Value", text_color=color.white, bgcolor=color.gray)
+    table.cell(dash, 0, 1, "State")
+    table.cell(dash, 1, 1, stateText, text_color=stateColor)
+    table.cell(dash, 0, 2, "Sessions rebuilt")
+    table.cell(dash, 1, 2, str.tostring(sessionCount))
+    table.cell(dash, 0, 3, "Daily SMI")
+    table.cell(dash, 1, 3, str.tostring(dailySmi, "#.2"))
+    table.cell(dash, 0, 4, "Live Dist. Low %")
+    table.cell(dash, 1, 4, str.tostring(distanceLowPctClamped, "#.2"))
+    table.cell(dash, 0, 5, "1H High40 / 1D")
+    table.cell(dash, 1, 5, str.tostring(reconstructedHigh40, "#.##") + " / " + str.tostring(dailyHigh40, "#.##"))
+    table.cell(dash, 0, 6, "Delta High %")
+    table.cell(dash, 1, 6, str.tostring(deltaHighPct, "#.####"))
+    table.cell(dash, 0, 7, "1H Low40 / 1D")
+    table.cell(dash, 1, 7, str.tostring(reconstructedLow40, "#.##") + " / " + str.tostring(dailyLow40, "#.##"))
+    table.cell(dash, 0, 8, "Delta Low %")
+    table.cell(dash, 1, 8, str.tostring(deltaLowPct, "#.####"))
+    table.cell(dash, 0, 9, "Episode Low")
+    table.cell(dash, 1, 9, str.tostring(episodeLow, "#.####"))
+    table.cell(dash, 0, 10, "Episode High frozen")
+    table.cell(dash, 1, 10, str.tostring(episodeHighFrozen, "#.####"))
+    table.cell(dash, 0, 11, "Recovery after zone %")
+    table.cell(dash, 1, 11, str.tostring(recoveryAfterZonePct, "#.2"))
+    table.cell(dash, 0, 12, "Confirmation price")
+    table.cell(dash, 1, 12, str.tostring(confirmationPrice, "#.####"), text_color=color.yellow)
+    table.cell(dash, 0, 13, "Velocity 1H")
+    table.cell(dash, 1, 13, str.tostring(velocity1H, "#.3"), text_color=velocity1H > 0 ? color.lime : color.red)
+    table.cell(dash, 0, 14, "Velocity 4H")
+    table.cell(dash, 1, 14, str.tostring(velocity4H, "#.3"), text_color=velocity4H > 0 ? color.lime : color.red)
+    table.cell(dash, 0, 15, "Acceleration 1H")
+    table.cell(dash, 1, 15, str.tostring(acceleration1H, "#.3"), text_color=acceleration1H > 0 ? color.lime : color.red)
+    table.cell(dash, 0, 16, "Acceleration 4H")
+    table.cell(dash, 1, 16, str.tostring(acceleration4H, "#.3"), text_color=acceleration4H > 0 ? color.lime : color.red)
+    table.cell(dash, 0, 17, "Low structure")
+    table.cell(dash, 1, 17, lowStructure, text_color=higherLow ? color.lime : lowerLow ? color.red : color.white)
+    table.cell(dash, 0, 18, "Last pivot low")
+    table.cell(dash, 1, 18, str.tostring(lastPivotLow, "#.####"))
+    table.cell(dash, 0, 19, "Remaining upside %")
+    table.cell(dash, 1, 19, str.tostring(remainingUpsidePct, "#.2"))
+
+// === ALERTS ===
+alertcondition(episodeStartTrigger, title="Observation Episode Started", message="ARR Monitor: {{ticker}} entered a new observation episode.")
+alertcondition(confirmationEvent, title="Dynamic Recovery Confirmed", message="ARR Monitor: {{ticker}} reached recovery confirmation with positive 1H and 4H velocity.")
+alertcondition(episodeActive and higherLow and not higherLow[1], title="Higher Low Detected", message="ARR Monitor: {{ticker}} formed a confirmed higher low.")
+
+// === DATA WINDOW ===
+plot(reconstructedHigh40, title="DATA Reconstructed High40", display=display.data_window)
+plot(reconstructedLow40, title="DATA Reconstructed Low40", display=display.data_window)
+plot(dailyHigh40, title="DATA Daily High40", display=display.data_window)
+plot(dailyLow40, title="DATA Daily Low40", display=display.data_window)
+plot(episodeHighFrozen, title="DATA Episode High Frozen", display=display.data_window)
+plot(episodeLow, title="DATA Episode Low", display=display.data_window)
+plot(episodePositionPctClamped, title="DATA Episode Range Position %", display=display.data_window)
+plot(recoveryAfterZonePct, title="DATA Recovery After Zone %", display=display.data_window)
+plot(confirmationPrice, title="DATA Confirmation Price", display=display.data_window)
+plot(velocity1H, title="DATA Velocity 1H", display=display.data_window)
+plot(velocity4H, title="DATA Velocity 4H", display=display.data_window)
+plot(acceleration1H, title="DATA Acceleration 1H", display=display.data_window)
+plot(acceleration4H, title="DATA Acceleration 4H", display=display.data_window)
+plot(lastPivotLow, title="DATA Last Pivot Low", display=display.data_window)
+plot(previousPivotLow, title="DATA Previous Pivot Low", display=display.data_window)
+plot(higherLow ? 1.0 : lowerLow ? -1.0 : 0.0, title="DATA Low Structure (+1 HL / -1 LL)", display=display.data_window)
+plot(geometricConfirmed ? 1.0 : 0.0, title="DATA Geometric Confirmed", display=display.data_window)
+plot(dynamicConfirmed ? 1.0 : 0.0, title="DATA Dynamic Confirmed", display=display.data_window)
+plot(remainingUpsidePct, title="DATA Remaining Upside %", display=display.data_window)

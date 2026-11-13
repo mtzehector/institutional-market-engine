@@ -1,0 +1,15 @@
+{
+  "note": "Local generated artifacts excluded from Git; hashes identify the existing snapshot, not independent verification or availability to collaborators.",
+  "artifacts": [
+    {
+      "path": "data/model_registry.csv",
+      "bytes": 326640,
+      "sha256": "524f713d6ba2c0b084b56174f4a27ef34433638c70ea4abdd012ce61d9a1e2e4"
+    },
+    {
+      "path": "reports/long_smi_filter_walkforward_2026_09_11_v1/panel.csv",
+      "bytes": 51107973,
+      "sha256": "b12b3cd3409d0bb15d865b073ee808392ccc3014169e3502273adef8430028d1"
+    }
+  ]
+}

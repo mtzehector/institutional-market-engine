@@ -18,5 +18,8 @@ data/raw/
 data/processed/
 output/
 *.xlsx
-*.csv
 .ipynb_checkpoints/
+
+# Local generated research state and large regenerable panel
+/data/model_registry.csv
+/reports/long_smi_filter_walkforward_2026_09_11_v1/panel.csv

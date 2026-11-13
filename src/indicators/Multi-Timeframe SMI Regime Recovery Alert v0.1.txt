@@ -1,0 +1,135 @@
+//@version=6
+// Multi-Timeframe SMI Regime + Recovery Alert v0.1
+// Experimental decision-support indicator. It does not predict returns.
+// Designed for a 30-minute regular-session chart.
+//
+// LIVE/CAUSAL INTENT:
+// At each confirmed chart bar, uses only values observable at that moment.
+// Developing 1D/1W/2H values can differ after those HTF bars finally close.
+// Alerts are therefore live events and historical markers are not a backtest.
+
+indicator("Multi-Timeframe SMI Regime + Recovery Alert v0.1", shorttitle="MTF SMI Recovery", overlay=true, precision=2)
+
+groupSmi = "SMI"
+kLength = input.int(5, "K Period", minval=1, maxval=50, group=groupSmi)
+dLength = input.int(3, "D / Smoothing", minval=1, maxval=50, group=groupSmi)
+signalLength = input.int(3, "Signal EMA", minval=1, maxval=50, group=groupSmi)
+
+groupTf = "Regime timeframes"
+tfWeek = input.timeframe("W", "Weekly", group=groupTf)
+tfDay = input.timeframe("D", "Daily", group=groupTf)
+tf2H = input.timeframe("120", "2 hours", group=groupTf)
+tf30m = input.timeframe("30", "30 minutes", group=groupTf)
+
+groupRecovery = "Recovery Percentage"
+recoveryWindow = input.int(40, "Daily local-high window", minval=5, maxval=500, group=groupRecovery)
+minimumRecovery = input.float(0.0, "Minimum Recovery % for qualified alert", minval=0.0, maxval=200.0, step=0.1, group=groupRecovery)
+
+groupAlert = "Alert behavior"
+requireChartClose = input.bool(true, "Trigger only on chart-bar close", group=groupAlert)
+useRecoveryFilter = input.bool(false, "Require minimum Recovery %", group=groupAlert)
+
+groupDisplay = "Display"
+showBackground = input.bool(true, "Highlight 4/4 alignment", group=groupDisplay)
+showDashboard = input.bool(true, "Show dashboard", group=groupDisplay)
+showMarkers = input.bool(true, "Show new-regime marker", group=groupDisplay)
+
+f_smi(int k, int d) =>
+    float hh = ta.highest(high, k)
+    float ll = ta.lowest(low, k)
+    float priceRange = hh - ll
+    float relative = close - (hh + ll) / 2.0
+    float numerator = ta.ema(ta.ema(relative, d), d)
+    float denominator = ta.ema(ta.ema(priceRange, d), d) / 2.0
+    denominator != 0.0 ? 100.0 * numerator / denominator : 0.0
+
+f_signal(int k, int d, int signalLen) =>
+    ta.ema(f_smi(k, d), signalLen)
+
+f_regime(int k, int d, int signalLen) =>
+    float smiValue = f_smi(k, d)
+    float signalValue = ta.ema(smiValue, signalLen)
+    smiValue > signalValue and smiValue > smiValue[1] and signalValue > signalValue[1]
+
+weeklySmi = request.security(syminfo.tickerid, tfWeek, f_smi(kLength, dLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+weeklySignal = request.security(syminfo.tickerid, tfWeek, f_signal(kLength, dLength, signalLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+weeklyBull = request.security(syminfo.tickerid, tfWeek, f_regime(kLength, dLength, signalLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+dailySmi = request.security(syminfo.tickerid, tfDay, f_smi(kLength, dLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+dailySignal = request.security(syminfo.tickerid, tfDay, f_signal(kLength, dLength, signalLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+dailyBull = request.security(syminfo.tickerid, tfDay, f_regime(kLength, dLength, signalLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+smi2H = request.security(syminfo.tickerid, tf2H, f_smi(kLength, dLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+signal2H = request.security(syminfo.tickerid, tf2H, f_signal(kLength, dLength, signalLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+bull2H = request.security(syminfo.tickerid, tf2H, f_regime(kLength, dLength, signalLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+smi30m = request.security(syminfo.tickerid, tf30m, f_smi(kLength, dLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+signal30m = request.security(syminfo.tickerid, tf30m, f_signal(kLength, dLength, signalLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+bull30m = request.security(syminfo.tickerid, tf30m, f_regime(kLength, dLength, signalLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+alignedCount = (weeklyBull ? 1 : 0) + (dailyBull ? 1 : 0) + (bull2H ? 1 : 0) + (bull30m ? 1 : 0)
+allAligned = alignedCount == 4
+
+dailyLocalHigh = request.security(syminfo.tickerid, tfDay, ta.highest(high, recoveryWindow), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+dailyLocalLow = request.security(syminfo.tickerid, tfDay, ta.lowest(low, recoveryWindow), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+recoveryPct = close > 0.0 ? math.max(0.0, (dailyLocalHigh / close - 1.0) * 100.0) : na
+localRange = dailyLocalHigh - dailyLocalLow
+rangePositionPct = localRange > 0.0 ? math.max(0.0, math.min(100.0, (close - dailyLocalLow) / localRange * 100.0)) : 50.0
+
+barReady = not requireChartClose or barstate.isconfirmed
+newAlignedRegime = allAligned and not allAligned[1]
+recoveryQualified = not useRecoveryFilter or recoveryPct >= minimumRecovery
+regimeTrigger = newAlignedRegime and recoveryQualified and barReady
+
+bgcolor(showBackground and allAligned ? color.new(color.lime, 88) : na)
+plotshape(showMarkers and regimeTrigger, title="New confirmed 4/4 bullish regime", style=shape.triangleup, location=location.belowbar, color=color.lime, text="4/4", textcolor=color.black, size=size.small)
+
+plot(recoveryPct, title="Recovery Percentage", display=display.data_window)
+plot(rangePositionPct, title="Daily Range Position %", display=display.data_window)
+plot(alignedCount, title="Aligned Timeframes Count", display=display.data_window)
+plot(allAligned ? 1.0 : 0.0, title="SCAN 4 of 4 Bullish", display=display.data_window)
+plot(regimeTrigger ? 1.0 : 0.0, title="SCAN New Qualified Regime", display=display.data_window)
+
+f_state_text(bool state) => state ? "ASCENDING" : "NO"
+f_state_color(bool state) => state ? color.lime : color.new(color.red, 10)
+
+var table dashboard = table.new(position.top_right, 4, 8, bgcolor=color.new(color.black, 15), frame_color=color.gray, border_width=1)
+if barstate.islast and showDashboard
+    table.clear(dashboard, 0, 0, 3, 7)
+    table.cell(dashboard, 0, 0, "TF", text_color=color.white, bgcolor=color.gray)
+    table.cell(dashboard, 1, 0, "SMI", text_color=color.white, bgcolor=color.gray)
+    table.cell(dashboard, 2, 0, "Signal", text_color=color.white, bgcolor=color.gray)
+    table.cell(dashboard, 3, 0, "Regime", text_color=color.white, bgcolor=color.gray)
+    table.cell(dashboard, 0, 1, "1W")
+    table.cell(dashboard, 1, 1, str.tostring(weeklySmi, "#.1"))
+    table.cell(dashboard, 2, 1, str.tostring(weeklySignal, "#.1"))
+    table.cell(dashboard, 3, 1, f_state_text(weeklyBull), text_color=f_state_color(weeklyBull))
+    table.cell(dashboard, 0, 2, "1D")
+    table.cell(dashboard, 1, 2, str.tostring(dailySmi, "#.1"))
+    table.cell(dashboard, 2, 2, str.tostring(dailySignal, "#.1"))
+    table.cell(dashboard, 3, 2, f_state_text(dailyBull), text_color=f_state_color(dailyBull))
+    table.cell(dashboard, 0, 3, "2H")
+    table.cell(dashboard, 1, 3, str.tostring(smi2H, "#.1"))
+    table.cell(dashboard, 2, 3, str.tostring(signal2H, "#.1"))
+    table.cell(dashboard, 3, 3, f_state_text(bull2H), text_color=f_state_color(bull2H))
+    table.cell(dashboard, 0, 4, "30m")
+    table.cell(dashboard, 1, 4, str.tostring(smi30m, "#.1"))
+    table.cell(dashboard, 2, 4, str.tostring(signal30m, "#.1"))
+    table.cell(dashboard, 3, 4, f_state_text(bull30m), text_color=f_state_color(bull30m))
+    table.cell(dashboard, 0, 5, "Alignment")
+    table.cell(dashboard, 1, 5, str.tostring(alignedCount) + "/4", text_color=allAligned ? color.lime : color.orange)
+    table.cell(dashboard, 2, 5, "Recovery")
+    table.cell(dashboard, 3, 5, str.tostring(recoveryPct, "#.2") + "%", text_color=color.aqua)
+    table.cell(dashboard, 0, 6, "Local range")
+    table.cell(dashboard, 1, 6, str.tostring(rangePositionPct, "#.1") + "%")
+    table.cell(dashboard, 2, 6, "Qualified")
+    table.cell(dashboard, 3, 6, recoveryQualified ? "YES" : "NO", text_color=recoveryQualified ? color.lime : color.orange)
+    table.cell(dashboard, 0, 7, "Mode")
+    table.cell(dashboard, 1, 7, "LIVE HTF")
+    table.cell(dashboard, 2, 7, "Chart")
+    table.cell(dashboard, 3, 7, timeframe.period == "30" ? "30m OK" : "USE 30m", text_color=timeframe.period == "30" ? color.lime : color.orange)
+
+alertcondition(regimeTrigger, title="New 4/4 Bullish SMI Regime", message="New 4/4 bullish SMI regime confirmed. Review Recovery Percentage and risk before entry.")
+
+if regimeTrigger
+    alert("MTF SMI 4/4: " + syminfo.ticker + " | Recovery=" + str.tostring(recoveryPct, "#.2") + "% | Price=" + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
